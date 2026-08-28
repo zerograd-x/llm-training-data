@@ -24,3 +24,7 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "integration: downloads and runs real external models",
+  "gpu: requires CUDA and optional GPU dependencies",
+]
