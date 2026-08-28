@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -18,4 +18,20 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
-      - run: pytest
+      - run: pytest -m "not integration"
+
+  hf-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-smollm2-135m-${{ runner.os }}-py311
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev,hf]'
+      - run: pytest -m "integration and not gpu" tests/integration/test_hf_forward.py
