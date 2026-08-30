@@ -4,14 +4,14 @@ from collections.abc import Callable
 
 import torch
 
-from .chat import ChatTemplateWrapper
+from .chat import ChatPromptFormatter
 from .examples import build_example_ids, round_up
-from .packing import GreedySequencePacker
+from .packing import ShortestFirstSequencePacker
 from .transforms import (
-    CompletionTransform,
-    DefaultCompletionTransform,
-    DefaultPromptTransform,
-    PromptTransform,
+    CompletionRenderer,
+    DefaultCompletionRenderer,
+    DefaultPromptRenderer,
+    PromptRenderer,
 )
 from .types import ColumnBatch, TokenizerLike
 
@@ -28,7 +28,7 @@ def _resolve_pad_id(tokenizer: TokenizerLike) -> int:
 def _validate_alignment(prompts: list[str], completions: list[str]) -> None:
     if len(prompts) != len(completions):
         raise ValueError(
-            f"prompt_transform returned {len(prompts)} rows but completion_transform "
+            f"prompt_renderer returned {len(prompts)} rows but completion_renderer "
             f"returned {len(completions)} rows"
         )
 
@@ -37,73 +37,73 @@ def _tokenize_examples(
     batch: ColumnBatch,
     *,
     tokenizer: TokenizerLike,
-    prompt_transform: PromptTransform,
-    completion_transform: CompletionTransform,
-    prompt_wrapper: ChatTemplateWrapper,
-    max_seq_length: int,
+    prompt_renderer: PromptRenderer,
+    completion_renderer: CompletionRenderer,
+    prompt_formatter: ChatPromptFormatter,
+    max_sequence_length: int,
     eos_id: int | None,
 ) -> list[tuple[list[int], list[int]]]:
-    prompts = prompt_transform(batch)
-    completions = completion_transform(batch)
+    prompts = prompt_renderer(batch)
+    completions = completion_renderer(batch)
     _validate_alignment(prompts, completions)
 
-    wrapped_prompts = [prompt_wrapper(prompt) for prompt in prompts]
-    prompt_ids = tokenizer(wrapped_prompts, add_special_tokens=True)["input_ids"]
+    formatted_prompts = [prompt_formatter(prompt) for prompt in prompts]
+    prompt_ids = tokenizer(formatted_prompts, add_special_tokens=True)["input_ids"]
     completion_ids = tokenizer(completions, add_special_tokens=False)["input_ids"]
 
     if len(prompt_ids) != len(completion_ids):
         raise ValueError("Tokenizer returned mismatched prompt/completion batch lengths")
 
     return [
-        build_example_ids(list(p_ids), list(c_ids), max_seq_length, eos_id)
+        build_example_ids(list(p_ids), list(c_ids), max_sequence_length, eos_id)
         for p_ids, c_ids in zip(prompt_ids, completion_ids)
     ]
 
 
-def create_sft_collate_fn(
+def build_sft_collator(
     tokenizer: TokenizerLike,
-    max_seq_length: int,
-    prompt_transform: PromptTransform | None = None,
-    completion_transform: CompletionTransform | None = None,
+    max_sequence_length: int,
+    prompt_renderer: PromptRenderer | None = None,
+    completion_renderer: CompletionRenderer | None = None,
     system_prompt: str | None = None,
     enable_thinking: bool | None = None,
     pad_to_multiple_of: int = 64,
-    needs_mm_token_type_ids: bool = False,
+    include_mm_token_type_ids: bool = False,
 ) -> Callable[[ColumnBatch], dict[str, torch.Tensor]]:
-    """Create a dynamic-padding SFT collator with completion-only loss."""
-    if max_seq_length <= 0:
-        raise ValueError("max_seq_length must be > 0")
+    """Build a dynamic-padding SFT collator with completion-only loss."""
+    if max_sequence_length <= 0:
+        raise ValueError("max_sequence_length must be > 0")
 
-    prompt_transform = prompt_transform or DefaultPromptTransform()
-    completion_transform = completion_transform or DefaultCompletionTransform()
-    prompt_wrapper = ChatTemplateWrapper(tokenizer, system_prompt, enable_thinking)
+    prompt_renderer = prompt_renderer or DefaultPromptRenderer()
+    completion_renderer = completion_renderer or DefaultCompletionRenderer()
+    prompt_formatter = ChatPromptFormatter(tokenizer, system_prompt, enable_thinking)
     pad_id = _resolve_pad_id(tokenizer)
     eos_id = tokenizer.eos_token_id
 
-    def collate_fn(batch: ColumnBatch) -> dict[str, torch.Tensor]:
+    def collate(batch: ColumnBatch) -> dict[str, torch.Tensor]:
         rows = _tokenize_examples(
             batch,
             tokenizer=tokenizer,
-            prompt_transform=prompt_transform,
-            completion_transform=completion_transform,
-            prompt_wrapper=prompt_wrapper,
-            max_seq_length=max_seq_length,
+            prompt_renderer=prompt_renderer,
+            completion_renderer=completion_renderer,
+            prompt_formatter=prompt_formatter,
+            max_sequence_length=max_sequence_length,
             eos_id=eos_id,
         )
         if not rows:
             raise ValueError("SFT collator received an empty batch")
 
         longest = max(len(ids) for ids, _ in rows)
-        target_len = min(round_up(longest, pad_to_multiple_of), max_seq_length)
+        target_length = min(round_up(longest, pad_to_multiple_of), max_sequence_length)
 
         input_rows: list[list[int]] = []
         label_rows: list[list[int]] = []
         attention_rows: list[list[int]] = []
         for ids, labels in rows:
-            pad_len = target_len - len(ids)
-            input_rows.append(ids + [pad_id] * pad_len)
-            label_rows.append(labels + [-100] * pad_len)
-            attention_rows.append([1] * len(ids) + [0] * pad_len)
+            padding_length = target_length - len(ids)
+            input_rows.append(ids + [pad_id] * padding_length)
+            label_rows.append(labels + [-100] * padding_length)
+            attention_rows.append([1] * len(ids) + [0] * padding_length)
 
         input_ids = torch.tensor(input_rows, dtype=torch.long)
         result = {
@@ -111,67 +111,108 @@ def create_sft_collate_fn(
             "attention_mask": torch.tensor(attention_rows, dtype=torch.long),
             "labels": torch.tensor(label_rows, dtype=torch.long),
         }
-        if needs_mm_token_type_ids:
+        if include_mm_token_type_ids:
             result["mm_token_type_ids"] = torch.zeros_like(input_ids)
         return result
 
-    return collate_fn
+    return collate
+
+
+def build_packed_sft_collator(
+    tokenizer: TokenizerLike,
+    max_sequence_length: int,
+    packing_factor: int,
+    prompt_renderer: PromptRenderer | None = None,
+    completion_renderer: CompletionRenderer | None = None,
+    system_prompt: str | None = None,
+    enable_thinking: bool | None = None,
+    include_mm_token_type_ids: bool = False,
+) -> Callable[[ColumnBatch], dict[str, torch.Tensor]]:
+    """Build a stateful shortest-first packed SFT collator.
+
+    ``packing_factor`` is the number of ``max_sequence_length`` token slots in
+    the single physical packed row, so the row token budget is their product.
+    """
+    if max_sequence_length <= 0:
+        raise ValueError("max_sequence_length must be > 0")
+    if packing_factor <= 0:
+        raise ValueError("packing_factor must be > 0")
+
+    prompt_renderer = prompt_renderer or DefaultPromptRenderer()
+    completion_renderer = completion_renderer or DefaultCompletionRenderer()
+    prompt_formatter = ChatPromptFormatter(tokenizer, system_prompt, enable_thinking)
+    pad_id = _resolve_pad_id(tokenizer)
+    eos_id = tokenizer.eos_token_id
+
+    token_budget = max_sequence_length * packing_factor
+    packer = ShortestFirstSequencePacker(token_budget)
+
+    def collate(batch: ColumnBatch) -> dict[str, torch.Tensor]:
+        new_examples = _tokenize_examples(
+            batch,
+            tokenizer=tokenizer,
+            prompt_renderer=prompt_renderer,
+            completion_renderer=completion_renderer,
+            prompt_formatter=prompt_formatter,
+            max_sequence_length=max_sequence_length,
+            eos_id=eos_id,
+        )
+        packed = packer.pack(new_examples, pad_id=pad_id)
+
+        input_ids = torch.tensor([packed.input_ids], dtype=torch.long)
+        result = {
+            "input_ids": input_ids,
+            "labels": torch.tensor([packed.labels], dtype=torch.long),
+            "position_ids": torch.tensor([packed.position_ids], dtype=torch.long),
+        }
+        if include_mm_token_type_ids:
+            result["mm_token_type_ids"] = torch.zeros_like(input_ids)
+        return result
+
+    collate.packer = packer  # type: ignore[attr-defined]
+    return collate
+
+
+# Backward-compatible wrappers using the original parameter names.
+def create_sft_collate_fn(
+    tokenizer: TokenizerLike,
+    max_seq_length: int,
+    prompt_transform: PromptRenderer | None = None,
+    completion_transform: CompletionRenderer | None = None,
+    system_prompt: str | None = None,
+    enable_thinking: bool | None = None,
+    pad_to_multiple_of: int = 64,
+    needs_mm_token_type_ids: bool = False,
+) -> Callable[[ColumnBatch], dict[str, torch.Tensor]]:
+    return build_sft_collator(
+        tokenizer=tokenizer,
+        max_sequence_length=max_seq_length,
+        prompt_renderer=prompt_transform,
+        completion_renderer=completion_transform,
+        system_prompt=system_prompt,
+        enable_thinking=enable_thinking,
+        pad_to_multiple_of=pad_to_multiple_of,
+        include_mm_token_type_ids=needs_mm_token_type_ids,
+    )
 
 
 def create_packed_sft_collate_fn(
     tokenizer: TokenizerLike,
     max_seq_length: int,
     max_packed_rows: int,
-    prompt_transform: PromptTransform | None = None,
-    completion_transform: CompletionTransform | None = None,
+    prompt_transform: PromptRenderer | None = None,
+    completion_transform: CompletionRenderer | None = None,
     system_prompt: str | None = None,
     enable_thinking: bool | None = None,
     needs_mm_token_type_ids: bool = False,
 ) -> Callable[[ColumnBatch], dict[str, torch.Tensor]]:
-    """Create a stateful shortest-first packed-SFT collator.
-
-    The output has physical batch size 1 and uses ``position_ids`` resets to
-    encode segment boundaries. No ``attention_mask`` is returned.
-
-    Correctness therefore requires an attention backend that explicitly
-    supports packed-sequence isolation from reset ``position_ids``. This is not
-    a universal property of all FlashAttention-enabled or hybrid models.
-    """
-    if max_seq_length <= 0:
-        raise ValueError("max_seq_length must be > 0")
-    if max_packed_rows <= 0:
-        raise ValueError("max_packed_rows must be > 0")
-
-    prompt_transform = prompt_transform or DefaultPromptTransform()
-    completion_transform = completion_transform or DefaultCompletionTransform()
-    prompt_wrapper = ChatTemplateWrapper(tokenizer, system_prompt, enable_thinking)
-    pad_id = _resolve_pad_id(tokenizer)
-    eos_id = tokenizer.eos_token_id
-
-    total_budget = max_seq_length * max_packed_rows
-    packer = GreedySequencePacker(total_budget)
-
-    def collate_fn(batch: ColumnBatch) -> dict[str, torch.Tensor]:
-        new_examples = _tokenize_examples(
-            batch,
-            tokenizer=tokenizer,
-            prompt_transform=prompt_transform,
-            completion_transform=completion_transform,
-            prompt_wrapper=prompt_wrapper,
-            max_seq_length=max_seq_length,
-            eos_id=eos_id,
-        )
-        layout = packer.pack(new_examples, pad_id=pad_id)
-
-        input_ids = torch.tensor([layout.input_ids], dtype=torch.long)
-        result = {
-            "input_ids": input_ids,
-            "labels": torch.tensor([layout.labels], dtype=torch.long),
-            "position_ids": torch.tensor([layout.position_ids], dtype=torch.long),
-        }
-        if needs_mm_token_type_ids:
-            result["mm_token_type_ids"] = torch.zeros_like(input_ids)
-        return result
-
-    collate_fn.packer = packer  # type: ignore[attr-defined]
-    return collate_fn
+    return build_packed_sft_collator(
+        tokenizer=tokenizer,
+        max_sequence_length=max_seq_length,
+        packing_factor=max_packed_rows,
+        prompt_renderer=prompt_transform,
+        completion_renderer=completion_transform,
+        system_prompt=system_prompt,
+        enable_thinking=enable_thinking,
+        include_mm_token_type_ids=needs_mm_token_type_ids,
+    )
