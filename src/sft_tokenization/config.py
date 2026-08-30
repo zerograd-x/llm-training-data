@@ -16,12 +16,11 @@ class SFTDataConfig(BaseModel):
     completion_prefix: str | None = None
 
 
-class TokenizationConfig(SFTDataConfig):
-    """Backward-compatible config using the legacy transform field names."""
+class TokenizationConfig(BaseModel):
+    """Legacy configuration preserved for backward compatibility."""
 
-    prompt_transform: str = _DEFAULT_PROMPT_RENDERER
-    completion_transform: str | None = _DEFAULT_COMPLETION_RENDERER
-
-    def model_post_init(self, __context: object) -> None:
-        self.prompt_renderer = self.prompt_transform
-        self.completion_renderer = self.completion_transform
+    prompt_transform: str = "sft_tokenization.transforms.DefaultPromptTransform"
+    completion_transform: str | None = "sft_tokenization.transforms.DefaultCompletionTransform"
+    system_prompt: str | None = None
+    enable_thinking: bool | None = None
+    completion_prefix: str | None = None
