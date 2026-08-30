@@ -6,7 +6,7 @@ import torch
 transformers = pytest.importorskip("transformers")
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from sft_tokenization import create_packed_sft_collate_fn
+from llm_training_data import build_packed_sft_collator
 
 
 MODEL_ID = "HuggingFaceTB/SmolLM2-135M-Instruct"
@@ -30,12 +30,6 @@ def _find_subsequence(haystack: list[int], needle: list[int]) -> int:
 @pytest.mark.integration
 @pytest.mark.gpu
 def test_packed_segments_are_attention_isolated():
-    """A preceding packed example must not change the logits of the next segment.
-
-    This validates the backend assumption used by the packed collator: on a
-    compatible Hugging Face FlashAttention-2 path, reset position_ids are
-    interpreted as independent causal sequences.
-    """
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for FlashAttention-2 integration testing")
     pytest.importorskip("flash_attn")
@@ -49,10 +43,10 @@ def test_packed_segments_are_attention_isolated():
     model.eval()
 
     def make_collator():
-        return create_packed_sft_collate_fn(
+        return build_packed_sft_collator(
             tokenizer,
-            max_seq_length=64,
-            max_packed_rows=2,
+            max_sequence_length=64,
+            packing_factor=2,
         )
 
     batch_ab = make_collator()(
@@ -71,16 +65,12 @@ def test_packed_segments_are_attention_isolated():
         }
     )
 
-    # The standalone packed B batch is [B][PAD]. The second reset marks the
-    # beginning of the trailing padding segment, hence the exact B length.
     standalone_starts = _segment_starts(batch_b["position_ids"])
     assert standalone_starts[0] == 0
     assert len(standalone_starts) >= 2
     b_length = standalone_starts[1]
     b_ids = batch_b["input_ids"][0, :b_length].tolist()
 
-    # Packing is shortest-first, so do not assume B is the second logical
-    # segment. Locate the exact B token sequence in the packed row instead.
     ab_ids = batch_ab["input_ids"][0].tolist()
     b_start = _find_subsequence(ab_ids, b_ids)
     assert batch_ab["position_ids"][0, b_start].item() == 0
