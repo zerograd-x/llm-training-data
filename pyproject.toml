@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sft-tokenization"
+name = "llm-training-data"
 version = "0.1.0"
-description = "Generic prompt/completion tokenization and sequence packing utilities for supervised causal-LM training."
+description = "Generic utilities for preparing model-ready LLM training data, including transforms, chat templating, tokenization, labeling, padding, and sequence packing."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
