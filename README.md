@@ -1,9 +1,14 @@
-# sft-tokenization
+# llm-training-data
 
-A small, generic library for turning column-oriented examples into supervised
-causal-LM batches. It focuses on tokenization boundaries and sequence packing;
-it does **not** include a trainer, data platform, model registry, or
-application-specific prompts.
+A small, generic library for turning structured examples into model-ready LLM
+training batches. The current implementation focuses on supervised causal-LM
+preparation: transforms, chat templating, tokenization, label construction,
+padding, and sequence packing. It does **not** include a trainer, data platform,
+model registry, or application-specific prompts.
+
+The install/distribution name is `llm-training-data`. The Python import namespace
+remains `sft_tokenization` for backward compatibility and because the current
+public API is specifically centered on SFT batch preparation.
 
 ## What it provides
 
@@ -32,6 +37,10 @@ mappings such as:
 Hugging Face tokenizers are supported structurally through a small protocol;
 `transformers` is an optional dependency rather than a runtime requirement for
 the package itself.
+
+The repository name is intentionally broader than the current import namespace:
+future training-data components can live alongside SFT tokenization without
+forcing a breaking rename of existing imports.
 
 ## Install
 
@@ -97,8 +106,8 @@ can pass explicit sequence metadata without changing the packing algorithm.
 
 ## Intentional hardening vs. the source specification
 
-This public implementation preserves the core token/label/packing semantics but
-fails early on several malformed inputs instead of silently continuing:
+This implementation preserves the core token/label/packing semantics but fails
+early on several malformed inputs instead of silently continuing:
 
 - non-positive sequence budgets;
 - missing both `pad_token_id` and `eos_token_id`;
