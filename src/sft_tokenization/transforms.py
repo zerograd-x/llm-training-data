@@ -13,48 +13,48 @@ def _to_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-class PromptTransform(ABC):
+class PromptRenderer(ABC):
     @abstractmethod
     def __call__(self, batch: ColumnBatch) -> list[str]: ...
 
 
-class CompletionTransform(ABC):
+class CompletionRenderer(ABC):
     @abstractmethod
     def __call__(self, batch: ColumnBatch) -> list[str]: ...
 
 
-class ChosenTransform(ABC):
+class ChosenResponseRenderer(ABC):
     @abstractmethod
     def __call__(self, batch: ColumnBatch) -> list[str]: ...
 
 
-class RejectedTransform(ABC):
+class RejectedResponseRenderer(ABC):
     @abstractmethod
     def __call__(self, batch: ColumnBatch) -> list[str]: ...
 
 
-class DefaultPromptTransform(PromptTransform):
+class DefaultPromptRenderer(PromptRenderer):
     def __call__(self, batch: ColumnBatch) -> list[str]:
         return [_to_text(value) for value in batch["prompt"]]
 
 
-class DefaultCompletionTransform(CompletionTransform):
+class DefaultCompletionRenderer(CompletionRenderer):
     def __call__(self, batch: ColumnBatch) -> list[str]:
         return [_to_text(value) for value in batch["completion"]]
 
 
-class DefaultChosenTransform(ChosenTransform):
+class DefaultChosenResponseRenderer(ChosenResponseRenderer):
     def __call__(self, batch: ColumnBatch) -> list[str]:
         return [_to_text(value) for value in batch["chosen"]]
 
 
-class DefaultRejectedTransform(RejectedTransform):
+class DefaultRejectedResponseRenderer(RejectedResponseRenderer):
     def __call__(self, batch: ColumnBatch) -> list[str]:
         return [_to_text(value) for value in batch["rejected"]]
 
 
-def load_transform(dotted_path: str) -> Any:
-    """Instantiate a zero-argument class from a dotted import path."""
+def load_renderer(dotted_path: str) -> Any:
+    """Instantiate a zero-argument renderer class from a dotted import path."""
     module_path, class_name = dotted_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     cls = getattr(module, class_name)
@@ -64,8 +64,8 @@ def load_transform(dotted_path: str) -> Any:
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
 
-def template_columns(template: str) -> list[str]:
-    """Return unique placeholders in first-occurrence order."""
+def extract_template_fields(template: str) -> list[str]:
+    """Return unique template field names in first-occurrence order."""
     seen: list[str] = []
     for name in _PLACEHOLDER.findall(template):
         if name not in seen:
@@ -73,12 +73,12 @@ def template_columns(template: str) -> list[str]:
     return seen
 
 
-class TemplatePromptTransform(PromptTransform):
-    """Small, deterministic ``{column}`` template renderer.
+class TemplatePromptRenderer(PromptRenderer):
+    """Small, deterministic ``{column}`` prompt renderer.
 
     Subclasses may set either ``template`` or ``template_file``. A template
     file is resolved relative to the subclass module's directory, so packaged
-    resources can live next to the transform implementation.
+    resources can live next to the renderer implementation.
 
     This intentionally is *not* ``str.format`` or Jinja: only ``{word}``
     placeholders are substituted.
@@ -99,23 +99,23 @@ class TemplatePromptTransform(PromptTransform):
                 raise ValueError("Cannot resolve template_file for a module without __file__")
             text = (Path(module_file).resolve().parent / self.template_file).read_text()
         else:
-            raise ValueError("TemplatePromptTransform requires template or template_file")
+            raise ValueError("TemplatePromptRenderer requires template or template_file")
 
         if not text.strip():
             raise ValueError("Prompt template must not be empty or whitespace-only")
 
-        columns = template_columns(text)
-        if not columns:
+        fields = extract_template_fields(text)
+        if not fields:
             raise ValueError("Prompt template must contain at least one {column} placeholder")
 
         self._template = text
-        self._columns = columns
+        self._fields = fields
 
     def __call__(self, batch: ColumnBatch) -> list[str]:
-        row_count = len(batch[self._columns[0]])
-        for column in self._columns[1:]:
-            if len(batch[column]) != row_count:
-                raise ValueError(f"Template column {column!r} has a different row count")
+        row_count = len(batch[self._fields[0]])
+        for field in self._fields[1:]:
+            if len(batch[field]) != row_count:
+                raise ValueError(f"Template field {field!r} has a different row count")
 
         rows: list[str] = []
         for index in range(row_count):
@@ -126,3 +126,17 @@ class TemplatePromptTransform(PromptTransform):
                 )
             )
         return rows
+
+
+# Backward-compatible aliases. Prefer the renderer vocabulary in new code.
+PromptTransform = PromptRenderer
+CompletionTransform = CompletionRenderer
+ChosenTransform = ChosenResponseRenderer
+RejectedTransform = RejectedResponseRenderer
+DefaultPromptTransform = DefaultPromptRenderer
+DefaultCompletionTransform = DefaultCompletionRenderer
+DefaultChosenTransform = DefaultChosenResponseRenderer
+DefaultRejectedTransform = DefaultRejectedResponseRenderer
+TemplatePromptTransform = TemplatePromptRenderer
+load_transform = load_renderer
+template_columns = extract_template_fields
