@@ -1,51 +1,59 @@
 # llm-training-data
 
-A small, generic library for turning structured examples into model-ready LLM
-training batches. The current implementation focuses on supervised causal-LM
-preparation: rendering, chat formatting, tokenization, label construction,
-padding, and sequence packing. It does **not** include a trainer, data platform,
-model registry, or application-specific prompts.
+A focused library for turning structured examples into model-ready LLM training batches.
+The current implementation covers supervised causal-LM preparation: rendering,
+chat formatting, tokenization, label construction, padding, and sequence packing.
+It does not include a trainer, model registry, or application-specific prompts.
 
-The install/distribution name is `llm-training-data`. The Python import namespace
-remains `sft_tokenization` for backward compatibility.
+The distribution name and Python import namespace are intentionally aligned:
 
-## Public API vocabulary
+```python
+import llm_training_data
+```
 
-New code should use names that describe the data operation rather than the
-implementation mechanism:
+## Public API
 
-- `PromptRenderer` / `CompletionRenderer` instead of `*Transform`;
-- `ChatPromptFormatter` instead of `ChatTemplateWrapper`;
-- `build_sft_collator` instead of `create_sft_collate_fn`;
-- `build_packed_sft_collator` instead of `create_packed_sft_collate_fn`;
-- `ShortestFirstSequencePacker` instead of `GreedySequencePacker`;
-- `PackedSequence` instead of `PackedSequenceLayout`;
-- `SFTDataConfig` instead of `TokenizationConfig`.
+The API uses data-preparation terminology rather than implementation-oriented names:
 
-Legacy names remain available as compatibility aliases or wrappers.
+- `PromptRenderer`, `CompletionRenderer`
+- `TemplatePromptRenderer`
+- `ChatPromptFormatter`
+- `SFTDataConfig`
+- `build_sft_collator()`
+- `build_packed_sft_collator()`
+- `ShortestFirstSequencePacker`
+- `PackedSequence`
 
-## What it provides
+## Install
 
-- Pluggable prompt/completion/preference response renderers.
-- Consistent Hugging Face chat-prompt formatting.
-- Separate prompt/completion tokenization so the loss boundary is explicit.
-- Completion-only labels (`prompt=-100`, `completion=token_id`).
-- Completion-priority truncation and left-truncated prompts.
-- Dynamic padding for normal SFT batches.
-- Stateful shortest-first sequence packing with reset `position_ids`.
-- Exact system-prompt checkpoint sidecar helpers.
+```bash
+pip install -e .
+```
+
+For Hugging Face integration:
+
+```bash
+pip install -e '.[hf]'
+```
+
+For development:
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
 
 ## Basic SFT
 
 ```python
-from sft_tokenization import build_sft_collator
+from llm_training_data import build_sft_collator
 
-collate = build_sft_collator(
+collator = build_sft_collator(
     tokenizer,
     max_sequence_length=2048,
 )
 
-batch = collate({
+batch = collator({
     "prompt": ["Question: 2 + 2 ="],
     "completion": [" 4"],
 })
@@ -54,40 +62,59 @@ batch = collate({
 The returned dictionary contains `input_ids`, `attention_mask`, and `labels`.
 Prompt and padding positions are masked with `-100` in `labels`.
 
+## Custom rendering
+
+```python
+from llm_training_data import TemplatePromptRenderer, build_sft_collator
+
+class ProductPromptRenderer(TemplatePromptRenderer):
+    template = "Title: {title}\nDescription: {description}"
+
+collator = build_sft_collator(
+    tokenizer,
+    max_sequence_length=2048,
+    prompt_renderer=ProductPromptRenderer(),
+)
+```
+
+Renderers operate on ordinary column-oriented mappings, so the core package is
+independent of any specific dataset platform.
+
 ## Packed SFT
 
 ```python
-from sft_tokenization import build_packed_sft_collator
+from llm_training_data import build_packed_sft_collator
 
-collate = build_packed_sft_collator(
+collator = build_packed_sft_collator(
     tokenizer,
     max_sequence_length=2048,
     packing_factor=8,
 )
-packed = collate(batch)
 ```
 
-`packing_factor` means the single physical packed row has a token budget of
+The physical output batch size is 1. The token budget for one packed row is
 `max_sequence_length * packing_factor`.
 
-Packed output has physical batch size 1 and contains `input_ids`, `labels`, and
-reset `position_ids`. It intentionally does not return a normal
-`attention_mask`.
+Packed output contains `input_ids`, `labels`, and reset `position_ids`; it does
+not include a normal `attention_mask`.
 
-### Important backend requirement
+### Backend requirement
 
-Reset `position_ids` only isolate packed examples when the model's attention
-backend explicitly interprets those resets as independent sequences. This is
-not universal across all FlashAttention-enabled or hybrid architectures. Test
-backend compatibility before enabling packed training for a new model family.
+Reset `position_ids` only isolate logical examples when the model attention
+backend explicitly interprets those resets as independent sequences. This is not
+universal across FlashAttention-enabled or hybrid architectures. Validate a new
+model/backend combination before enabling packed training.
 
-The pure packing state is exposed as `ShortestFirstSequencePacker`; it retains
-segment lengths and cumulative boundaries so future backend adapters can pass
-explicit sequence metadata without changing the packing algorithm.
+The GPU integration test compares a packed segment against the same segment run
+standalone under FlashAttention-2. It is intentionally separate from normal CI
+because it requires CUDA and `flash-attn`.
 
-## Backward compatibility
+## Design boundary
 
-Existing code using names such as `PromptTransform`, `GreedySequencePacker`,
-`create_sft_collate_fn`, `max_seq_length`, or `max_packed_rows` continues to
-work through compatibility aliases/wrappers. New code should prefer the API
-shown above.
+The library is independent of Ray, Spark, DeepSpeed, vLLM, and application-specific
+schemas. Hugging Face tokenizers are supported through a small protocol, while
+`transformers` remains an optional dependency.
+
+The package fails early on malformed inputs such as non-positive sequence budgets,
+missing pad/EOS token IDs, empty normal SFT batches, renderer row-count mismatches,
+and inconsistent template fields.
