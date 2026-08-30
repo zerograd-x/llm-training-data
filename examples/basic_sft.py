@@ -5,11 +5,11 @@ Install optional Hugging Face support first:
 """
 from transformers import AutoTokenizer
 
-from sft_tokenization import create_sft_collate_fn
+from llm_training_data import build_sft_collator
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
-collate = create_sft_collate_fn(tokenizer, max_seq_length=128)
+collate = build_sft_collator(tokenizer, max_sequence_length=128)
 
 batch = {
     "prompt": ["Question: 2 + 2 ="],
