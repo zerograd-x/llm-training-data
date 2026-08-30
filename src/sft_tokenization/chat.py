@@ -3,8 +3,8 @@ from __future__ import annotations
 from .types import TokenizerLike
 
 
-class ChatTemplateWrapper:
-    """Apply one tokenizer chat-template policy consistently to prompts."""
+class ChatPromptFormatter:
+    """Format prompts with the tokenizer's chat-template policy."""
 
     def __init__(
         self,
@@ -65,3 +65,7 @@ class ChatTemplateWrapper:
             add_generation_prompt=True,
             **self._template_kwargs(),
         )
+
+
+# Backward compatibility.
+ChatTemplateWrapper = ChatPromptFormatter
