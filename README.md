@@ -62,7 +62,7 @@ semantic task
 evaluation cell
 ```
 
-A suite records immutable-enough source references plus family/task ownership:
+A suite records source snapshots plus family/task ownership:
 
 ```python
 from llm_training_data import DataSuiteSpec, FamilySpec, SourceRef
@@ -150,13 +150,19 @@ result = blend_prepared_examples(rows, spec)
 print(result.plan.rows_per_cell)
 ```
 
+`EvaluationCellSpec.task_names` can restrict a cell to only the tasks for which
+that experimental axis is meaningful. An omitted `task_names` applies the cell to
+all selected tasks. A row appearing in a cell where its task is explicitly not
+applicable is rejected, so "not applicable" is not confused with zero data supply.
+
 `shortfall_policy="error"` treats missing requested train supply as a broken data
 contract. `shortfall_policy="cap"` records a warning and takes all available train
 rows. Zero train supply always fails. Different tasks may use different policies.
 
 `task_row_counts={...}` plus the legacy `cap_to_available` flag remains supported as
 a compatibility surface; it is normalized internally into per-task
-`TaskBlendSpec` objects.
+`TaskBlendSpec` objects. The original positional field order of `BlendSpec` is also
+preserved.
 
 Sampling uses a stable semantic `sample_id` plus a seeded deterministic hash rank,
 so the same prepared corpus and seed produce the same blend. `train_probe` rows are
@@ -164,9 +170,9 @@ derived only from rows already selected into train, making `probe ⊆ train` a
 construction invariant rather than a convention.
 
 `DataPlan` records source/suite lineage when provided, prepared artifacts,
-available/requested/selected counts by task and cell, distinct-group coverage,
-supply warnings, evaluation-cell dimensions, the sampling seed, and fingerprint
-version. Persist it next to a dataset with `save_data_plan(...)` as
+available/requested/selected counts by task and applicable cell, distinct-group
+coverage, supply warnings, evaluation-cell dimensions, the sampling seed, and
+fingerprint version. Persist it next to a dataset with `save_data_plan(...)` as
 `data-plan.json`.
 
 The implementation is intentionally platform independent. External data systems
@@ -246,6 +252,6 @@ small protocol, while `transformers` remains an optional dependency.
 
 The package fails early on malformed inputs such as invalid semantic examples,
 ambiguous task ownership, stale/underspecified source references, lineage mismatch,
-zero/short train supply, non-positive sequence budgets, missing pad/EOS token IDs,
-empty normal SFT batches, renderer row-count mismatches, and inconsistent template
-fields.
+non-applicable evaluation rows, zero/short train supply, non-positive sequence
+budgets, missing pad/EOS token IDs, empty normal SFT batches, renderer row-count
+mismatches, and inconsistent template fields.
