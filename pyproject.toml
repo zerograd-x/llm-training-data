@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llm-training-data"
 version = "0.1.0"
-description = "Generic utilities for preparing model-ready LLM training data, including transforms, chat templating, tokenization, labeling, padding, and sequence packing."
+description = "Generic utilities for deterministic pretraining data blends, transforms, tokenization, labeling, padding, and sequence packing."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
