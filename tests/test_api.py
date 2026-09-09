@@ -170,7 +170,7 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
     rows.append(
         PreparedExample(
             task_name="not_requested",
-            split=TRAIN_SPLIT,
+            split="ignored_split",
             group_id="ignored",
             input_text="ignored",
             target_text="ignored",
@@ -202,6 +202,8 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
     assert probe_ids <= train_ids
     assert first.plan.rows_per_cell["generate_sid/test_new_store"] == 2
     assert first.plan.selected_rows == 5 + (3 * 2) + 3
+    assert first.plan.input_rows == 18
+    assert first.plan.whitelisted_rows == 17
 
     train_cell = next(
         cell
