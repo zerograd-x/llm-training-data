@@ -5,18 +5,24 @@ from pathlib import Path
 import pytest
 
 from llm_training_data import (
+    BlendSpec,
     ChatPromptFormatter,
     DefaultCompletionRenderer,
     DefaultPromptRenderer,
+    PreparedExample,
     SFTDataConfig,
     ShortestFirstSequencePacker,
     TemplatePromptRenderer,
+    TRAIN_PROBE_SPLIT,
+    TRAIN_SPLIT,
+    blend_prepared_examples,
     build_packed_sft_collator,
     build_sft_collator,
     build_training_example,
     extract_template_fields,
     read_system_prompt_metadata,
     resolve_system_prompt,
+    save_data_plan,
     write_system_prompt_metadata,
 )
 
@@ -100,3 +106,116 @@ def test_invalid_budgets(tokenizer_cls):
         build_sft_collator(tokenizer, max_sequence_length=0)
     with pytest.raises(ValueError, match="packing_factor"):
         build_packed_sft_collator(tokenizer, max_sequence_length=8, packing_factor=0)
+
+
+def test_prepared_example_has_stable_semantic_sample_id():
+    train = PreparedExample(
+        task_name="pick",
+        split=TRAIN_SPLIT,
+        group_id="store-1",
+        input_text="description",
+        options=("ab", "c"),
+        answer_index=0,
+    )
+    probe = train.with_split(TRAIN_PROBE_SPLIT)
+    other_options = PreparedExample(
+        task_name="pick",
+        split=TRAIN_SPLIT,
+        group_id="store-1",
+        input_text="description",
+        options=("a", "bc"),
+        answer_index=0,
+    )
+
+    assert train.sample_id == probe.sample_id
+    assert train.sample_id != other_options.sample_id
+
+
+def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(tmp_path: Path):
+    rows = []
+    for index in range(8):
+        rows.append(
+            PreparedExample(
+                task_name="generate_sid",
+                split=TRAIN_SPLIT,
+                group_id=f"store-{index}",
+                input_text=f"store {index}",
+                target_text=f"sid-{index}",
+            )
+        )
+    for split in ("test_new_store", "test_new_query", "test_seen_query"):
+        for index in range(3):
+            rows.append(
+                PreparedExample(
+                    task_name="generate_sid",
+                    split=split,
+                    group_id=f"{split}-{index}",
+                    input_text=f"store {index}",
+                    target_text=f"sid-{index}",
+                )
+            )
+    rows.append(
+        PreparedExample(
+            task_name="not_requested",
+            split=TRAIN_SPLIT,
+            group_id="ignored",
+            input_text="ignored",
+            target_text="ignored",
+        )
+    )
+
+    spec = BlendSpec(
+        task_row_counts={"generate_sid": 5},
+        eval_rows_per_cell=2,
+        probe_rows_per_task=3,
+        seed=17,
+    )
+    first = blend_prepared_examples(rows, spec)
+    second = blend_prepared_examples(reversed(rows), spec)
+
+    first_identity = [(row.task_name, row.split, row.sample_id) for row in first.examples]
+    second_identity = [(row.task_name, row.split, row.sample_id) for row in second.examples]
+    assert first_identity == second_identity
+    assert {row.task_name for row in first.examples} == {"generate_sid"}
+
+    train_ids = {
+        row.sample_id for row in first.examples if row.split == TRAIN_SPLIT
+    }
+    probe_ids = {
+        row.sample_id for row in first.examples if row.split == TRAIN_PROBE_SPLIT
+    }
+    assert len(train_ids) == 5
+    assert len(probe_ids) == 3
+    assert probe_ids <= train_ids
+    assert first.plan.rows_per_cell["generate_sid/test_new_store"] == 2
+    assert first.plan.selected_rows == 5 + (3 * 2) + 3
+
+    plan_path = save_data_plan(first.plan, tmp_path)
+    assert plan_path.name == "data-plan.json"
+    assert plan_path.is_file()
+
+
+def test_pretrain_blend_distinguishes_zero_supply_from_shortfall():
+    rows = [
+        PreparedExample(
+            task_name="task_a",
+            split=TRAIN_SPLIT,
+            group_id=f"g-{index}",
+            input_text=str(index),
+            target_text="x",
+        )
+        for index in range(2)
+    ]
+
+    with pytest.raises(ValueError, match="< requested 3"):
+        blend_prepared_examples(rows, BlendSpec(task_row_counts={"task_a": 3}))
+
+    capped = blend_prepared_examples(
+        rows,
+        BlendSpec(task_row_counts={"task_a": 3}, cap_to_available=True),
+    )
+    assert len(capped.plan.warnings) == 1
+    assert capped.plan.warnings[0].code == "train_supply_shortfall"
+
+    with pytest.raises(ValueError, match="has 0 rows"):
+        blend_prepared_examples(rows, BlendSpec(task_row_counts={"missing": 1}))
