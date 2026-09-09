@@ -10,11 +10,7 @@ from typing import Any, Iterable, Mapping
 
 TRAIN_SPLIT = "train"
 TRAIN_PROBE_SPLIT = "train_probe"
-DEFAULT_EVAL_SPLITS = (
-    "test_new_store",
-    "test_new_query",
-    "test_seen_query",
-)
+DEFAULT_EVAL_SPLITS = ("validation",)
 _FINGERPRINT_VERSION = "sha256-v1"
 
 
@@ -23,8 +19,8 @@ class PreparedExample:
     """Semantic pretraining example before prompt rendering/tokenization.
 
     ``group_id`` identifies the entity/group used for lineage or holdout
-    isolation (for example a store or source document). ``sample_id`` below is
-    the unique semantic-row fingerprint and deliberately has different
+    isolation (for example an entity or source document). ``sample_id`` below
+    is the unique semantic-row fingerprint and deliberately has different
     semantics from ``group_id``.
 
     Generation examples use ``target_text`` with empty ``options`` and
@@ -59,13 +55,9 @@ class PreparedExample:
 
         if options:
             if self.target_text is not None:
-                raise ValueError(
-                    "Multiple-choice examples must leave target_text=None"
-                )
+                raise ValueError("Multiple-choice examples must leave target_text=None")
             if not 0 <= self.answer_index < len(options):
-                raise ValueError(
-                    "Multiple-choice answer_index must select one of options"
-                )
+                raise ValueError("Multiple-choice answer_index must select one of options")
         else:
             if self.answer_index != -1:
                 raise ValueError(
@@ -296,9 +288,8 @@ def blend_prepared_examples(
     """Resolve a deterministic task/split blend and its inspectable DataPlan.
 
     This is the platform-independent reference implementation. Large-scale
-    Spark/Ray executors can implement the same contract while preserving the
-    fingerprint, quota, whitelist, supply, group-coverage, and probe-subset
-    invariants.
+    executors can implement the same contract while preserving the fingerprint,
+    quota, whitelist, supply, group-coverage, and probe-subset invariants.
     """
     source = tuple(examples)
 

@@ -111,37 +111,37 @@ def test_invalid_budgets(tokenizer_cls):
 
 def test_prepared_example_has_stable_semantic_sample_id():
     train = PreparedExample(
-        task_name="pick",
+        task_name="choose_target",
         split=TRAIN_SPLIT,
-        group_id="store-1",
+        group_id="group-1",
         input_text="description",
         options=("ab", "c"),
         answer_index=0,
     )
     probe = train.with_split(TRAIN_PROBE_SPLIT)
     other_options = PreparedExample(
-        task_name="pick",
+        task_name="choose_target",
         split=TRAIN_SPLIT,
-        group_id="store-1",
+        group_id="group-1",
         input_text="description",
         options=("a", "bc"),
         answer_index=0,
     )
     from_old_contract = PreparedExample.from_mapping(
         {
-            "task_name": "generate",
+            "task_name": "generate_target",
             "input_text": "description",
             "options": [],
             "answer_index": -1,
-            "target_text": "sid",
-            "example_id": "store-2",
+            "target_text": "target",
+            "example_id": "group-2",
             "split": "train",
         }
     )
 
     assert train.sample_id == probe.sample_id
     assert train.sample_id != other_options.sample_id
-    assert from_old_contract.group_id == "store-2"
+    assert from_old_contract.group_id == "group-2"
 
 
 def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(tmp_path: Path):
@@ -149,24 +149,23 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
     for index in range(8):
         rows.append(
             PreparedExample(
-                task_name="generate_sid",
+                task_name="generate_target",
                 split=TRAIN_SPLIT,
-                group_id=f"store-{index}",
-                input_text=f"store {index}",
-                target_text=f"sid-{index}",
+                group_id=f"group-{index}",
+                input_text=f"input {index}",
+                target_text=f"target-{index}",
             )
         )
-    for split in ("test_new_store", "test_new_query", "test_seen_query"):
-        for index in range(3):
-            rows.append(
-                PreparedExample(
-                    task_name="generate_sid",
-                    split=split,
-                    group_id=f"{split}-{index}",
-                    input_text=f"store {index}",
-                    target_text=f"sid-{index}",
-                )
+    for index in range(3):
+        rows.append(
+            PreparedExample(
+                task_name="generate_target",
+                split="validation",
+                group_id=f"validation-{index}",
+                input_text=f"input {index}",
+                target_text=f"target-{index}",
             )
+        )
     rows.append(
         PreparedExample(
             task_name="not_requested",
@@ -178,7 +177,7 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
     )
 
     spec = BlendSpec(
-        task_row_counts={"generate_sid": 5},
+        task_row_counts={"generate_target": 5},
         eval_rows_per_cell=2,
         probe_rows_per_task=3,
         seed=17,
@@ -189,26 +188,24 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
     first_identity = [(row.task_name, row.split, row.sample_id) for row in first.examples]
     second_identity = [(row.task_name, row.split, row.sample_id) for row in second.examples]
     assert first_identity == second_identity
-    assert {row.task_name for row in first.examples} == {"generate_sid"}
+    assert {row.task_name for row in first.examples} == {"generate_target"}
 
-    train_ids = {
-        row.sample_id for row in first.examples if row.split == TRAIN_SPLIT
-    }
+    train_ids = {row.sample_id for row in first.examples if row.split == TRAIN_SPLIT}
     probe_ids = {
         row.sample_id for row in first.examples if row.split == TRAIN_PROBE_SPLIT
     }
     assert len(train_ids) == 5
     assert len(probe_ids) == 3
     assert probe_ids <= train_ids
-    assert first.plan.rows_per_cell["generate_sid/test_new_store"] == 2
-    assert first.plan.selected_rows == 5 + (3 * 2) + 3
-    assert first.plan.input_rows == 18
-    assert first.plan.whitelisted_rows == 17
+    assert first.plan.rows_per_cell["generate_target/validation"] == 2
+    assert first.plan.selected_rows == 5 + 2 + 3
+    assert first.plan.input_rows == 12
+    assert first.plan.whitelisted_rows == 11
 
     train_cell = next(
         cell
         for cell in first.plan.cells
-        if cell.task_name == "generate_sid" and cell.split == TRAIN_SPLIT
+        if cell.task_name == "generate_target" and cell.split == TRAIN_SPLIT
     )
     assert train_cell.available == 8
     assert train_cell.available_groups == 8
@@ -217,7 +214,7 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
 
     rendered = format_data_plan(first.plan)
     assert "EFFECTIVE DATA PLAN" in rendered
-    assert "generate_sid/train" in rendered
+    assert "generate_target/train" in rendered
     assert "groups=8" in rendered
 
     plan_path = save_data_plan(first.plan, tmp_path)
