@@ -254,6 +254,28 @@ def test_pretrain_blend_distinguishes_zero_supply_from_shortfall():
         blend_prepared_examples(rows, BlendSpec(task_row_counts={"missing": 1}))
 
 
+def test_legacy_blend_positional_order_is_preserved():
+    spec = BlendSpec(
+        {"task_a": 10},
+        7,
+        3,
+        99,
+        True,
+        "train",
+        "probe",
+        ("heldout",),
+    )
+    assert spec.eval_rows_per_cell == 7
+    assert spec.probe_rows_per_task == 3
+    assert spec.seed == 99
+    assert spec.cap_to_available is True
+    assert spec.eval_splits == ("heldout",)
+    assert spec.task_specs["task_a"] == TaskBlendSpec(
+        train_rows=10,
+        shortfall_policy="cap",
+    )
+
+
 def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
     suite = DataSuiteSpec(
         suite_id="suite-001",
@@ -276,7 +298,7 @@ def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
         family="generation",
         uri="artifact://prepared/generation",
         schema_version="semantic-v1",
-        row_count=9,
+        row_count=11,
         fingerprint="prepared-sha256",
         source_names=("documents",),
     )
@@ -294,6 +316,11 @@ def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
             EvaluationCellSpec(
                 name="heldout",
                 dimensions={"entity_exposure": "unseen"},
+            ),
+            EvaluationCellSpec(
+                name="relation_holdout",
+                dimensions={"relation_exposure": "unseen"},
+                task_names=("task_b",),
             ),
         ),
         eval_rows_per_cell=2,
@@ -333,6 +360,16 @@ def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
             for task_name in ("task_a", "task_b")
             for index in range(2)
         ],
+        *[
+            PreparedExample(
+                task_name="task_b",
+                split="relation_holdout",
+                group_id=f"task-b-relation-{index}",
+                input_text=f"relation {index}",
+                target_text="x",
+            )
+            for index in range(2)
+        ],
     ]
 
     result = blend_prepared_examples(
@@ -350,6 +387,8 @@ def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
     assert result.plan.rows_per_cell["task_b/train"] == 2
     assert result.plan.rows_per_cell["task_a/heldout"] == 2
     assert result.plan.rows_per_cell["task_b/heldout"] == 1
+    assert "task_a/relation_holdout" not in result.plan.rows_per_cell
+    assert result.plan.rows_per_cell["task_b/relation_holdout"] == 1
     assert result.plan.rows_per_cell["task_a/train_probe"] == 2
     assert result.plan.rows_per_cell["task_b/train_probe"] == 1
     assert len(result.plan.warnings) == 1
@@ -359,13 +398,47 @@ def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
         for cell in result.plan.cells
         if cell.task_name == "task_a" and cell.split == "heldout"
     )
+    relation_cell = next(
+        cell
+        for cell in result.plan.cells
+        if cell.task_name == "task_b" and cell.split == "relation_holdout"
+    )
     assert heldout_cell.dimensions == {"entity_exposure": "unseen"}
+    assert relation_cell.dimensions == {"relation_exposure": "unseen"}
 
     rendered = format_data_plan(result.plan)
     assert "SOURCES" in rendered
     assert "PREPARED ARTIFACTS" in rendered
     assert "shortfall=cap" in rendered
     assert "entity_exposure=unseen" in rendered
+    assert "relation_exposure=unseen" in rendered
+
+
+def test_pretrain_suite_rejects_non_applicable_cell_rows():
+    rows = [
+        PreparedExample(
+            task_name="task_a",
+            split=TRAIN_SPLIT,
+            group_id="train-a",
+            input_text="a",
+            target_text="x",
+        ),
+        PreparedExample(
+            task_name="task_a",
+            split="specialized",
+            group_id="bad-cell-a",
+            input_text="a",
+            target_text="x",
+        ),
+    ]
+    spec = BlendSpec(
+        task_specs={"task_a": TaskBlendSpec(train_rows=1)},
+        evaluation_cells=(
+            EvaluationCellSpec(name="specialized", task_names=("task_b",)),
+        ),
+    )
+    with pytest.raises(ValueError, match="not applicable"):
+        blend_prepared_examples(rows, spec)
 
 
 def test_pretrain_suite_rejects_ambiguous_task_ownership():
