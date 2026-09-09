@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 
 TRAIN_SPLIT = "train"
@@ -70,6 +70,32 @@ class PreparedExample:
                     "Generation examples without options must define target_text"
                 )
 
+    @classmethod
+    def from_mapping(cls, row: Mapping[str, Any]) -> "PreparedExample":
+        """Build from semantic rows, accepting ``example_id`` as ``group_id``.
+
+        The alias makes the reference contract directly usable with prepared
+        datasets that expose the seven semantic columns
+        ``task_name,input_text,options,answer_index,target_text,example_id,split``
+        while keeping group identity distinct from semantic sample identity in
+        the public API.
+        """
+        if "group_id" in row:
+            group_id = row["group_id"]
+        elif "example_id" in row:
+            group_id = row["example_id"]
+        else:
+            raise KeyError("Prepared example requires group_id or example_id")
+        return cls(
+            task_name=row["task_name"],
+            split=row["split"],
+            group_id=group_id,
+            input_text=row.get("input_text"),
+            options=tuple(row.get("options") or ()),
+            answer_index=row.get("answer_index", -1),
+            target_text=row.get("target_text"),
+        )
+
     @property
     def sample_id(self) -> str:
         """Stable identity of the semantic row, independent of split."""
@@ -118,19 +144,23 @@ class BlendSpec:
             raise ValueError("task_row_counts must be non-empty")
         if any(not isinstance(task, str) or not task.strip() for task in counts):
             raise ValueError("task_row_counts keys must be non-empty task names")
-        if any(count <= 0 for count in counts.values()):
-            raise ValueError("task_row_counts values must be > 0")
+        if any(not isinstance(count, int) or count <= 0 for count in counts.values()):
+            raise ValueError("task_row_counts values must be positive integers")
         object.__setattr__(self, "task_row_counts", counts)
 
         if self.eval_rows_per_cell <= 0:
             raise ValueError("eval_rows_per_cell must be > 0")
         if self.probe_rows_per_task <= 0:
             raise ValueError("probe_rows_per_task must be > 0")
-        if not self.train_split.strip() or not self.probe_split.strip():
-            raise ValueError("train_split and probe_split must be non-empty")
+        if not isinstance(self.train_split, str) or not self.train_split.strip():
+            raise ValueError("train_split must be non-empty")
+        if not isinstance(self.probe_split, str) or not self.probe_split.strip():
+            raise ValueError("probe_split must be non-empty")
 
         eval_splits = tuple(self.eval_splits)
-        if not eval_splits or any(not split.strip() for split in eval_splits):
+        if not eval_splits or any(
+            not isinstance(split, str) or not split.strip() for split in eval_splits
+        ):
             raise ValueError("eval_splits must contain non-empty split names")
         if len(set(eval_splits)) != len(eval_splits):
             raise ValueError("eval_splits must not contain duplicates")
@@ -152,8 +182,10 @@ class CellPlan:
     task_name: str
     split: str
     available: int
+    available_groups: int
     requested_cap: int
     selected: int
+    selected_groups: int
 
 
 @dataclass(frozen=True)
@@ -230,6 +262,10 @@ def _ranked(examples: Iterable[PreparedExample], seed: int) -> list[PreparedExam
     )
 
 
+def _distinct_groups(examples: Iterable[PreparedExample]) -> int:
+    return len({example.group_id for example in examples})
+
+
 def _validate_unique_samples(examples: Iterable[PreparedExample]) -> None:
     seen: set[tuple[str, str, str]] = set()
     for example in examples:
@@ -251,7 +287,8 @@ def blend_prepared_examples(
 
     This is the platform-independent reference implementation. Large-scale
     Spark/Ray executors can implement the same contract while preserving the
-    fingerprint, quota, whitelist, supply, and probe-subset invariants.
+    fingerprint, quota, whitelist, supply, group-coverage, and probe-subset
+    invariants.
     """
     source = tuple(examples)
     if any(example.split == spec.probe_split for example in source):
@@ -307,8 +344,10 @@ def blend_prepared_examples(
                     task_name=task_name,
                     split=split,
                     available=len(pool),
+                    available_groups=_distinct_groups(pool),
                     requested_cap=cap,
                     selected=len(chosen),
+                    selected_groups=_distinct_groups(chosen),
                 )
             )
             if split == spec.train_split:
@@ -317,7 +356,8 @@ def blend_prepared_examples(
     probes: list[PreparedExample] = []
     for task_name in sorted(spec.task_row_counts):
         train_rows = selected_train_by_task[task_name]
-        probe_count = min(len(train_rows), spec.probe_rows_per_task)
+        probe_cap = min(spec.probe_rows_per_task, spec.task_row_counts[task_name])
+        probe_count = min(len(train_rows), probe_cap)
         task_probes = [
             example.with_split(spec.probe_split)
             for example in train_rows[:probe_count]
@@ -328,8 +368,10 @@ def blend_prepared_examples(
                 task_name=task_name,
                 split=spec.probe_split,
                 available=len(train_rows),
-                requested_cap=spec.probe_rows_per_task,
+                available_groups=_distinct_groups(train_rows),
+                requested_cap=probe_cap,
                 selected=probe_count,
+                selected_groups=_distinct_groups(task_probes),
             )
         )
 
@@ -347,6 +389,36 @@ def blend_prepared_examples(
         warnings=tuple(warnings),
     )
     return BlendResult(examples=blended, plan=plan)
+
+
+def format_data_plan(plan: DataPlan) -> str:
+    """Render the resolved data distribution for logs/reviews."""
+    lines = [
+        "EFFECTIVE DATA PLAN",
+        "",
+        "SELECTION",
+        f"  fingerprint: {plan.fingerprint_algorithm}",
+        f"  seed: {plan.seed}",
+        f"  input rows: {plan.input_rows}",
+        f"  whitelisted rows: {plan.whitelisted_rows}",
+        f"  selected rows (including probe copies): {plan.selected_rows}",
+        "",
+        "CELLS",
+    ]
+    for cell in plan.cells:
+        lines.append(
+            f"  {cell.task_name}/{cell.split}: "
+            f"available={cell.available} groups={cell.available_groups} "
+            f"cap={cell.requested_cap} selected={cell.selected} "
+            f"selected_groups={cell.selected_groups}"
+        )
+    lines.extend(["", "WARNINGS"])
+    if not plan.warnings:
+        lines.append("  none")
+    else:
+        for warning in plan.warnings:
+            lines.append(f"  [{warning.code}] {warning.message}")
+    return "\n".join(lines)
 
 
 def save_data_plan(plan: DataPlan, output: str | Path) -> Path:
