@@ -56,18 +56,18 @@ from llm_training_data import BlendSpec, PreparedExample, blend_prepared_example
 
 rows = [
     PreparedExample(
-        task_name="grounding_sid_gen",
+        task_name="text_to_target",
         split="train",
-        group_id="store-123",
-        input_text="Store description",
-        target_text="store-sid",
+        group_id="entity-123",
+        input_text="Example input",
+        target_text="example-target",
     ),
 ]
 
 result = blend_prepared_examples(
     rows,
     BlendSpec(
-        task_row_counts={"grounding_sid_gen": 1},
+        task_row_counts={"text_to_target": 1},
         eval_rows_per_cell=5000,
         probe_rows_per_task=5000,
         seed=42,
@@ -87,9 +87,9 @@ invariant rather than a convention.
 warnings, the sampling seed, and fingerprint version. Persist it next to a dataset
 with `save_data_plan(...)` as `data-plan.json`.
 
-The implementation is intentionally platform independent. Spark/Ray pipelines can
-materialize the prepared corpus and implement the same blend contract without
-making the core package depend on either system.
+The implementation is intentionally platform independent. External data systems
+can materialize the prepared corpus and implement the same blend contract without
+becoming dependencies of the core package.
 
 ## Basic SFT
 
@@ -149,19 +149,18 @@ not include a normal `attention_mask`.
 ### Backend requirement
 
 Reset `position_ids` only isolate logical examples when the model attention
-backend explicitly interprets those resets as independent sequences. This is not
-universal across FlashAttention-enabled or hybrid architectures. Validate a new
-model/backend combination before enabling packed training.
+backend explicitly interprets those resets as independent sequences. Validate a
+new model/backend combination before enabling packed training.
 
 The GPU integration test compares a packed segment against the same segment run
-standalone under FlashAttention-2. It is intentionally separate from normal CI
-because it requires CUDA and `flash-attn`.
+standalone under a compatible packed-attention backend. It is intentionally
+separate from normal CI because it requires GPU-specific dependencies.
 
 ## Design boundary
 
-The library is independent of Ray, Spark, DeepSpeed, vLLM, and application-specific
-schemas. Hugging Face tokenizers are supported through a small protocol, while
-`transformers` remains an optional dependency.
+The package remains independent of distributed runtimes, storage systems, and
+application-specific schemas. Hugging Face tokenizers are supported through a
+small protocol, while `transformers` remains an optional dependency.
 
 The package fails early on malformed inputs such as invalid semantic examples,
 zero/short train supply, non-positive sequence budgets, missing pad/EOS token IDs,
