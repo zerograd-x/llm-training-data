@@ -33,12 +33,10 @@ def _require_non_empty(value: str, name: str) -> str:
 
 @dataclass(frozen=True)
 class SourceRef:
-    """Immutable-enough reference to one upstream data snapshot.
+    """Reference to one upstream data snapshot.
 
-    ``uri`` is intentionally storage-neutral. It may identify a local artifact,
-    object-store prefix, catalog table, dataset revision, or another location
-    understood by the caller. At least one snapshot/version/fingerprint field is
-    required so a data suite does not silently mean "whatever is latest".
+    ``uri`` is storage-neutral. At least one snapshot/version/fingerprint field
+    is required so a data suite does not silently mean "whatever is latest".
     """
 
     name: str
@@ -204,14 +202,15 @@ class PreparedArtifactRef:
 class EvaluationCellSpec:
     """Named evaluation cell plus explicit experimental dimensions.
 
-    Dimension keys and values are descriptive metadata, not hard-coded domain
-    semantics. A caller may use axes such as entity exposure, relation exposure,
-    time window, language, domain, or any other controlled evaluation factor.
+    ``task_names=None`` means the cell applies to every selected task. Otherwise
+    it explicitly identifies the tasks for which the cell is meaningful, making
+    "not applicable" distinct from "expected data was missing".
     """
 
     name: str
     dimensions: Mapping[str, str] = field(default_factory=dict)
     description: str | None = None
+    task_names: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "evaluation_cell.name")
@@ -229,6 +228,22 @@ class EvaluationCellSpec:
                 "evaluation_cell.dimensions must map non-empty strings to non-empty strings"
             )
         object.__setattr__(self, "dimensions", dimensions)
+
+        if self.task_names is not None:
+            task_names = tuple(self.task_names)
+            if not task_names or any(
+                not isinstance(task_name, str) or not task_name.strip()
+                for task_name in task_names
+            ):
+                raise ValueError(
+                    "evaluation_cell.task_names must contain non-empty task names"
+                )
+            if len(set(task_names)) != len(task_names):
+                raise ValueError("evaluation_cell.task_names must not contain duplicates")
+            object.__setattr__(self, "task_names", task_names)
+
+    def applies_to(self, task_name: str) -> bool:
+        return self.task_names is None or task_name in self.task_names
 
 
 @dataclass(frozen=True)
@@ -346,13 +361,12 @@ class PreparedExample:
 class BlendSpec:
     """Requested task/cell mixture for a prepared semantic corpus.
 
-    ``task_specs`` is the preferred API. ``task_row_counts`` and
-    ``cap_to_available`` remain as a compatibility surface and are normalized
-    into per-task ``TaskBlendSpec`` objects during construction.
+    Legacy fields retain their original positional order. ``task_specs`` and
+    ``evaluation_cells`` are the preferred richer API and are placed at the end
+    so existing positional construction remains compatible.
     """
 
     task_row_counts: Mapping[str, int] | None = None
-    task_specs: Mapping[str, TaskBlendSpec | Mapping[str, Any]] | None = None
     eval_rows_per_cell: int = 5_000
     probe_rows_per_task: int = 5_000
     seed: int = 42
@@ -360,6 +374,7 @@ class BlendSpec:
     train_split: str = TRAIN_SPLIT
     probe_split: str = TRAIN_PROBE_SPLIT
     eval_splits: tuple[str, ...] | None = None
+    task_specs: Mapping[str, TaskBlendSpec | Mapping[str, Any]] | None = None
     evaluation_cells: tuple[EvaluationCellSpec | Mapping[str, Any], ...] | None = None
 
     def __post_init__(self) -> None:
@@ -530,24 +545,32 @@ def sampling_rank_key(example: PreparedExample, seed: int) -> int:
     return int.from_bytes(bytes.fromhex(_canonical_sha256(payload))[:8], "big")
 
 
+def _evaluation_cell(spec: BlendSpec, split: str) -> EvaluationCellSpec | None:
+    for cell in spec.evaluation_cells or ():
+        if cell.name == split:
+            return cell
+    return None
+
+
 def resolve_cell_cap(task_name: str, split: str, spec: BlendSpec) -> int:
-    """Resolve one task/cell cap; absent tasks are excluded everywhere."""
+    """Resolve one task/cell cap; absent or non-applicable tasks get zero."""
     task_spec = spec.task_specs.get(task_name) if spec.task_specs is not None else None
     if task_spec is None:
         return 0
     if split == spec.train_split:
         return task_spec.train_rows
-    if split in (spec.eval_splits or ()):
-        return (
-            task_spec.eval_rows_per_cell
-            if task_spec.eval_rows_per_cell is not None
-            else spec.eval_rows_per_cell
-        )
     if split == spec.probe_split:
         return (
             task_spec.probe_rows
             if task_spec.probe_rows is not None
             else spec.probe_rows_per_task
+        )
+    cell = _evaluation_cell(spec, split)
+    if cell is not None and cell.applies_to(task_name):
+        return (
+            task_spec.eval_rows_per_cell
+            if task_spec.eval_rows_per_cell is not None
+            else spec.eval_rows_per_cell
         )
     return 0
 
@@ -627,6 +650,17 @@ def _validate_suite_lineage(
                 )
 
 
+def _validate_cell_applicability(examples: Iterable[PreparedExample], spec: BlendSpec) -> None:
+    cells = {cell.name: cell for cell in spec.evaluation_cells or ()}
+    for example in examples:
+        cell = cells.get(example.split)
+        if cell is not None and not cell.applies_to(example.task_name):
+            raise ValueError(
+                f"task {example.task_name!r} is not applicable to evaluation cell "
+                f"{example.split!r}"
+            )
+
+
 def blend_prepared_examples(
     examples: Iterable[PreparedExample],
     spec: BlendSpec,
@@ -666,6 +700,7 @@ def blend_prepared_examples(
     if unknown_splits:
         raise ValueError(f"Prepared corpus contains unknown splits: {unknown_splits}")
 
+    _validate_cell_applicability(whitelisted, spec)
     _validate_unique_samples(whitelisted)
 
     grouped: dict[tuple[str, str], list[PreparedExample]] = defaultdict(list)
@@ -691,30 +726,44 @@ def blend_prepared_examples(
     selected: list[PreparedExample] = []
     cell_plans: list[CellPlan] = []
     selected_train_by_task: dict[str, list[PreparedExample]] = {}
-    dimensions_by_cell = {
-        cell.name: dict(cell.dimensions) for cell in (spec.evaluation_cells or ())
-    }
 
     for task_name in sorted(spec.task_specs):
-        for split in (spec.train_split, *(spec.eval_splits or ())):
-            pool = grouped[(task_name, split)]
-            cap = resolve_cell_cap(task_name, split, spec)
+        train_pool = grouped[(task_name, spec.train_split)]
+        train_cap = resolve_cell_cap(task_name, spec.train_split, spec)
+        train_rows = _ranked(train_pool, spec.seed)[:train_cap]
+        selected.extend(train_rows)
+        selected_train_by_task[task_name] = train_rows
+        cell_plans.append(
+            CellPlan(
+                task_name=task_name,
+                split=spec.train_split,
+                available=len(train_pool),
+                available_groups=_distinct_groups(train_pool),
+                requested_cap=train_cap,
+                selected=len(train_rows),
+                selected_groups=_distinct_groups(train_rows),
+            )
+        )
+
+        for cell in spec.evaluation_cells or ():
+            if not cell.applies_to(task_name):
+                continue
+            pool = grouped[(task_name, cell.name)]
+            cap = resolve_cell_cap(task_name, cell.name, spec)
             chosen = _ranked(pool, spec.seed)[:cap]
             selected.extend(chosen)
             cell_plans.append(
                 CellPlan(
                     task_name=task_name,
-                    split=split,
+                    split=cell.name,
                     available=len(pool),
                     available_groups=_distinct_groups(pool),
                     requested_cap=cap,
                     selected=len(chosen),
                     selected_groups=_distinct_groups(chosen),
-                    dimensions=dimensions_by_cell.get(split, {}),
+                    dimensions=dict(cell.dimensions),
                 )
             )
-            if split == spec.train_split:
-                selected_train_by_task[task_name] = chosen
 
     probes: list[PreparedExample] = []
     for task_name, task_spec in sorted(spec.task_specs.items()):
