@@ -45,6 +45,12 @@ class PreparedExample:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
+        if self.input_text is not None and not isinstance(self.input_text, str):
+            raise TypeError("input_text must be a string or None")
+        if self.target_text is not None and not isinstance(self.target_text, str):
+            raise TypeError("target_text must be a string or None")
+        if not isinstance(self.answer_index, int):
+            raise TypeError("answer_index must be an integer")
 
         options = tuple(self.options)
         if any(not isinstance(option, str) for option in options):
@@ -148,10 +154,14 @@ class BlendSpec:
             raise ValueError("task_row_counts values must be positive integers")
         object.__setattr__(self, "task_row_counts", counts)
 
-        if self.eval_rows_per_cell <= 0:
-            raise ValueError("eval_rows_per_cell must be > 0")
-        if self.probe_rows_per_task <= 0:
-            raise ValueError("probe_rows_per_task must be > 0")
+        if not isinstance(self.eval_rows_per_cell, int) or self.eval_rows_per_cell <= 0:
+            raise ValueError("eval_rows_per_cell must be a positive integer")
+        if not isinstance(self.probe_rows_per_task, int) or self.probe_rows_per_task <= 0:
+            raise ValueError("probe_rows_per_task must be a positive integer")
+        if not isinstance(self.seed, int):
+            raise TypeError("seed must be an integer")
+        if not isinstance(self.cap_to_available, bool):
+            raise TypeError("cap_to_available must be a boolean")
         if not isinstance(self.train_split, str) or not self.train_split.strip():
             raise ValueError("train_split must be non-empty")
         if not isinstance(self.probe_split, str) or not self.probe_split.strip():
@@ -291,7 +301,14 @@ def blend_prepared_examples(
     invariants.
     """
     source = tuple(examples)
-    if any(example.split == spec.probe_split for example in source):
+
+    # Whitelist first. Excluded tasks must not influence split validation,
+    # supply accounting, sampling, or evaluation output.
+    whitelisted = tuple(
+        example for example in source if example.task_name in spec.task_row_counts
+    )
+
+    if any(example.split == spec.probe_split for example in whitelisted):
         raise ValueError(
             f"Prepared corpus must not contain {spec.probe_split!r}; probe rows "
             "are derived from selected train rows"
@@ -299,14 +316,15 @@ def blend_prepared_examples(
 
     allowed_source_splits = {spec.train_split, *spec.eval_splits}
     unknown_splits = sorted(
-        {example.split for example in source if example.split not in allowed_source_splits}
+        {
+            example.split
+            for example in whitelisted
+            if example.split not in allowed_source_splits
+        }
     )
     if unknown_splits:
         raise ValueError(f"Prepared corpus contains unknown splits: {unknown_splits}")
 
-    whitelisted = tuple(
-        example for example in source if example.task_name in spec.task_row_counts
-    )
     _validate_unique_samples(whitelisted)
 
     grouped: dict[tuple[str, str], list[PreparedExample]] = defaultdict(list)
