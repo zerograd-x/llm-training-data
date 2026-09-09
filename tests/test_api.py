@@ -20,6 +20,7 @@ from llm_training_data import (
     build_sft_collator,
     build_training_example,
     extract_template_fields,
+    format_data_plan,
     read_system_prompt_metadata,
     resolve_system_prompt,
     save_data_plan,
@@ -126,9 +127,21 @@ def test_prepared_example_has_stable_semantic_sample_id():
         options=("a", "bc"),
         answer_index=0,
     )
+    from_old_contract = PreparedExample.from_mapping(
+        {
+            "task_name": "generate",
+            "input_text": "description",
+            "options": [],
+            "answer_index": -1,
+            "target_text": "sid",
+            "example_id": "store-2",
+            "split": "train",
+        }
+    )
 
     assert train.sample_id == probe.sample_id
     assert train.sample_id != other_options.sample_id
+    assert from_old_contract.group_id == "store-2"
 
 
 def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(tmp_path: Path):
@@ -189,6 +202,21 @@ def test_pretrain_blend_is_deterministic_whitelisted_and_probe_is_train_subset(t
     assert probe_ids <= train_ids
     assert first.plan.rows_per_cell["generate_sid/test_new_store"] == 2
     assert first.plan.selected_rows == 5 + (3 * 2) + 3
+
+    train_cell = next(
+        cell
+        for cell in first.plan.cells
+        if cell.task_name == "generate_sid" and cell.split == TRAIN_SPLIT
+    )
+    assert train_cell.available == 8
+    assert train_cell.available_groups == 8
+    assert train_cell.selected == 5
+    assert train_cell.selected_groups == 5
+
+    rendered = format_data_plan(first.plan)
+    assert "EFFECTIVE DATA PLAN" in rendered
+    assert "generate_sid/train" in rendered
+    assert "groups=8" in rendered
 
     plan_path = save_data_plan(first.plan, tmp_path)
     assert plan_path.name == "data-plan.json"
