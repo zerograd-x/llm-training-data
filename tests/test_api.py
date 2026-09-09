@@ -7,11 +7,17 @@ import pytest
 from llm_training_data import (
     BlendSpec,
     ChatPromptFormatter,
+    DataSuiteSpec,
     DefaultCompletionRenderer,
     DefaultPromptRenderer,
+    EvaluationCellSpec,
+    FamilySpec,
+    PreparedArtifactRef,
     PreparedExample,
     SFTDataConfig,
     ShortestFirstSequencePacker,
+    SourceRef,
+    TaskBlendSpec,
     TemplatePromptRenderer,
     TRAIN_PROBE_SPLIT,
     TRAIN_SPLIT,
@@ -246,3 +252,141 @@ def test_pretrain_blend_distinguishes_zero_supply_from_shortfall():
 
     with pytest.raises(ValueError, match="has 0 rows"):
         blend_prepared_examples(rows, BlendSpec(task_row_counts={"missing": 1}))
+
+
+def test_pretrain_suite_lineage_cells_and_per_task_shortfall_policy():
+    suite = DataSuiteSpec(
+        suite_id="suite-001",
+        sources=(
+            SourceRef(
+                name="documents",
+                uri="dataset://documents",
+                snapshot="2026-09-09",
+            ),
+        ),
+        families=(
+            FamilySpec(
+                name="generation",
+                source_names=("documents",),
+                task_names=("task_a", "task_b"),
+            ),
+        ),
+    )
+    artifact = PreparedArtifactRef(
+        family="generation",
+        uri="artifact://prepared/generation",
+        schema_version="semantic-v1",
+        row_count=9,
+        fingerprint="prepared-sha256",
+        source_names=("documents",),
+    )
+    spec = BlendSpec(
+        task_specs={
+            "task_a": TaskBlendSpec(train_rows=3, shortfall_policy="error"),
+            "task_b": TaskBlendSpec(
+                train_rows=3,
+                shortfall_policy="cap",
+                eval_rows_per_cell=1,
+                probe_rows=1,
+            ),
+        },
+        evaluation_cells=(
+            EvaluationCellSpec(
+                name="heldout",
+                dimensions={"entity_exposure": "unseen"},
+            ),
+        ),
+        eval_rows_per_cell=2,
+        probe_rows_per_task=2,
+        seed=9,
+    )
+
+    rows = [
+        *[
+            PreparedExample(
+                task_name="task_a",
+                split=TRAIN_SPLIT,
+                group_id=f"a-{index}",
+                input_text=f"a {index}",
+                target_text="x",
+            )
+            for index in range(3)
+        ],
+        *[
+            PreparedExample(
+                task_name="task_b",
+                split=TRAIN_SPLIT,
+                group_id=f"b-{index}",
+                input_text=f"b {index}",
+                target_text="x",
+            )
+            for index in range(2)
+        ],
+        *[
+            PreparedExample(
+                task_name=task_name,
+                split="heldout",
+                group_id=f"{task_name}-heldout-{index}",
+                input_text=f"heldout {index}",
+                target_text="x",
+            )
+            for task_name in ("task_a", "task_b")
+            for index in range(2)
+        ],
+    ]
+
+    result = blend_prepared_examples(
+        rows,
+        spec,
+        suite=suite,
+        prepared_artifacts=(artifact,),
+    )
+
+    assert result.plan.suite == suite
+    assert result.plan.prepared_artifacts == (artifact,)
+    assert result.plan.task_specs["task_a"].shortfall_policy == "error"
+    assert result.plan.task_specs["task_b"].shortfall_policy == "cap"
+    assert result.plan.rows_per_cell["task_a/train"] == 3
+    assert result.plan.rows_per_cell["task_b/train"] == 2
+    assert result.plan.rows_per_cell["task_a/heldout"] == 2
+    assert result.plan.rows_per_cell["task_b/heldout"] == 1
+    assert result.plan.rows_per_cell["task_a/train_probe"] == 2
+    assert result.plan.rows_per_cell["task_b/train_probe"] == 1
+    assert len(result.plan.warnings) == 1
+
+    heldout_cell = next(
+        cell
+        for cell in result.plan.cells
+        if cell.task_name == "task_a" and cell.split == "heldout"
+    )
+    assert heldout_cell.dimensions == {"entity_exposure": "unseen"}
+
+    rendered = format_data_plan(result.plan)
+    assert "SOURCES" in rendered
+    assert "PREPARED ARTIFACTS" in rendered
+    assert "shortfall=cap" in rendered
+    assert "entity_exposure=unseen" in rendered
+
+
+def test_pretrain_suite_rejects_ambiguous_task_ownership():
+    source = SourceRef(
+        name="source",
+        uri="dataset://source",
+        version="v1",
+    )
+    with pytest.raises(ValueError, match="belongs to both"):
+        DataSuiteSpec(
+            sources=(source,),
+            families=(
+                FamilySpec(
+                    name="family_a",
+                    source_names=("source",),
+                    task_names=("shared_task",),
+                ),
+                FamilySpec(
+                    name="family_b",
+                    source_names=("source",),
+                    task_names=("shared_task",),
+                ),
+            ),
+        )
