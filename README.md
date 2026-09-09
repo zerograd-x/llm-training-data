@@ -1,9 +1,10 @@
 # llm-training-data
 
-A focused library for turning structured examples into model-ready LLM training batches.
-The current implementation covers supervised causal-LM preparation: rendering,
-chat formatting, tokenization, label construction, padding, and sequence packing.
-It does not include a trainer, model registry, or application-specific prompts.
+A focused library for turning structured examples into model-ready LLM training data.
+It owns semantic data preparation, deterministic pretraining blends, rendering,
+tokenization, label construction, padding, and sequence packing. It does not
+include a trainer, model registry, distributed runtime, or application-specific
+storage/orchestration.
 
 The distribution name and Python import namespace are intentionally aligned:
 
@@ -15,6 +16,7 @@ import llm_training_data
 
 The API uses data-preparation terminology rather than implementation-oriented names:
 
+- `PreparedExample`, `BlendSpec`, `DataPlan`, `blend_prepared_examples()`
 - `PromptRenderer`, `CompletionRenderer`
 - `TemplatePromptRenderer`
 - `ChatPromptFormatter`
@@ -42,6 +44,52 @@ For development:
 pip install -e '.[dev]'
 pytest
 ```
+
+## Pretraining semantic corpus and blend
+
+Pretraining data stays semantic until the rendering/tokenization stage. A prepared
+example carries task identity, split/holdout identity, a group id for lineage, and
+semantic slots for generation or multiple-choice objectives:
+
+```python
+from llm_training_data import BlendSpec, PreparedExample, blend_prepared_examples
+
+rows = [
+    PreparedExample(
+        task_name="grounding_sid_gen",
+        split="train",
+        group_id="store-123",
+        input_text="Store description",
+        target_text="store-sid",
+    ),
+]
+
+result = blend_prepared_examples(
+    rows,
+    BlendSpec(
+        task_row_counts={"grounding_sid_gen": 1},
+        eval_rows_per_cell=5000,
+        probe_rows_per_task=5000,
+        seed=42,
+    ),
+)
+
+print(result.plan.rows_per_cell)
+```
+
+`task_row_counts` is both the train quota and the task allowlist. Sampling uses a
+stable semantic `sample_id` plus a seeded deterministic hash rank, so the same
+prepared corpus and seed produce the same blend. `train_probe` rows are derived
+only from rows already selected into train, making `probe ⊆ train` a construction
+invariant rather than a convention.
+
+`DataPlan` records available/requested/selected counts by task and split, supply
+warnings, the sampling seed, and fingerprint version. Persist it next to a dataset
+with `save_data_plan(...)` as `data-plan.json`.
+
+The implementation is intentionally platform independent. Spark/Ray pipelines can
+materialize the prepared corpus and implement the same blend contract without
+making the core package depend on either system.
 
 ## Basic SFT
 
@@ -115,6 +163,7 @@ The library is independent of Ray, Spark, DeepSpeed, vLLM, and application-speci
 schemas. Hugging Face tokenizers are supported through a small protocol, while
 `transformers` remains an optional dependency.
 
-The package fails early on malformed inputs such as non-positive sequence budgets,
-missing pad/EOS token IDs, empty normal SFT batches, renderer row-count mismatches,
-and inconsistent template fields.
+The package fails early on malformed inputs such as invalid semantic examples,
+zero/short train supply, non-positive sequence budgets, missing pad/EOS token IDs,
+empty normal SFT batches, renderer row-count mismatches, and inconsistent template
+fields.
