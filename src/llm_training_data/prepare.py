@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 import hashlib
-import json
+import inspect\nimport json
 from typing import Any, ClassVar, Iterable, Mapping
 
 from .pretrain import (
