@@ -1,3 +1,4 @@
+from .causal_lm import build_causal_lm_collator, build_causal_lm_sequences
 from .chat import ChatPromptFormatter
 from .checkpoint import (
     SYSTEM_PROMPT_FILENAME,
@@ -6,7 +7,7 @@ from .checkpoint import (
     write_system_prompt_metadata,
 )
 from .collators import build_packed_sft_collator, build_sft_collator
-from .config import SFTDataConfig
+from .config import CausalLMDataConfig, SFTDataConfig
 from .examples import build_training_example, round_up
 from .packing import PackedSequence, ShortestFirstSequencePacker
 from .prepare import (
@@ -122,4 +123,7 @@ __all__ = [
     "validate_prepared_artifact",
     "validate_prepared_examples",
     "validate_prepared_mappings",
+    "CausalLMDataConfig",
+    "build_causal_lm_collator",
+    "build_causal_lm_sequences",
 ]
