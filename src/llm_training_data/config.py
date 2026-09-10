@@ -12,3 +12,13 @@ class SFTDataConfig(BaseModel):
     system_prompt: str | None = None
     enable_thinking: bool | None = None
     completion_prefix: str | None = None
+
+
+class CausalLMDataConfig(BaseModel):
+    """Controls plain causal-LM document tokenization and sequence construction."""
+
+    append_eos: bool = True
+    add_special_tokens: bool = False
+    pack_across_documents: bool = True
+    allow_document_split: bool = True
+    drop_remainder: bool = False

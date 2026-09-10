@@ -6,6 +6,7 @@ import pytest
 
 from llm_training_data import (
     BlendSpec,
+    CausalLMDataConfig,
     ChatPromptFormatter,
     DataSuiteSpec,
     DefaultCompletionRenderer,
@@ -29,6 +30,8 @@ from llm_training_data import (
     TRAIN_PROBE_SPLIT,
     TRAIN_SPLIT,
     blend_prepared_examples,
+    build_causal_lm_collator,
+    build_causal_lm_sequences,
     build_packed_sft_collator,
     build_sft_collator,
     build_training_example,
@@ -753,4 +756,80 @@ def test_prepare_registry_and_suite_fail_loudly_on_contract_mismatch():
                 },
             ),
             registry,
+        )
+
+
+def test_causal_lm_sequences_pack_documents_and_preserve_full_token_labels(tokenizer_cls):
+    tokenizer = tokenizer_cls()
+    sequences = build_causal_lm_sequences(
+        ["alpha beta", "gamma"],
+        tokenizer=tokenizer,
+        max_sequence_length=4,
+    )
+
+    assert [len(row["input_ids"]) for row in sequences] == [4, 1]
+    assert all(row["labels"] == row["input_ids"] for row in sequences)
+    gamma_id = 10 + sum(ord(ch) for ch in "gamma") % 80
+    assert sequences[0]["input_ids"][-2:] == [tokenizer.eos_token_id, gamma_id]
+    assert sequences[1]["input_ids"] == [tokenizer.eos_token_id]
+
+
+def test_causal_lm_document_boundary_and_split_policies(tokenizer_cls):
+    tokenizer = tokenizer_cls()
+
+    isolated = build_causal_lm_sequences(
+        ["alpha beta", "gamma"],
+        tokenizer=tokenizer,
+        max_sequence_length=4,
+        config=CausalLMDataConfig(pack_across_documents=False),
+    )
+    assert [len(row["input_ids"]) for row in isolated] == [3, 2]
+
+    with pytest.raises(ValueError, match="allow_document_split=False"):
+        build_causal_lm_sequences(
+            ["one two three four"],
+            tokenizer=tokenizer,
+            max_sequence_length=3,
+            config=CausalLMDataConfig(
+                pack_across_documents=False,
+                allow_document_split=False,
+            ),
+        )
+
+    dropped = build_causal_lm_sequences(
+        ["alpha beta", "gamma"],
+        tokenizer=tokenizer,
+        max_sequence_length=4,
+        config=CausalLMDataConfig(drop_remainder=True),
+    )
+    assert len(dropped) == 1
+    assert len(dropped[0]["input_ids"]) == 4
+
+
+def test_causal_lm_collator_pads_only_non_tokens(tokenizer_cls):
+    tokenizer = tokenizer_cls()
+    collator = build_causal_lm_collator(
+        tokenizer,
+        max_sequence_length=4,
+    )
+    batch = collator(
+        {
+            "input_ids": [[11, 12, 2, 13], [2]],
+            "labels": [[11, 12, 2, 13], [2]],
+        }
+    )
+
+    assert batch["input_ids"].tolist() == [[11, 12, 2, 13], [2, 0, 0, 0]]
+    assert batch["labels"].tolist() == [[11, 12, 2, 13], [2, -100, -100, -100]]
+    assert batch["attention_mask"].tolist() == [[1, 1, 1, 1], [1, 0, 0, 0]]
+
+
+def test_causal_lm_requires_eos_when_boundary_enabled(tokenizer_cls):
+    tokenizer = tokenizer_cls()
+    tokenizer.eos_token_id = None
+    with pytest.raises(ValueError, match="eos_token_id"):
+        build_causal_lm_sequences(
+            ["alpha"],
+            tokenizer=tokenizer,
+            max_sequence_length=4,
         )

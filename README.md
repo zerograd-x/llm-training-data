@@ -20,6 +20,7 @@ The API uses data-preparation terminology rather than implementation-oriented na
 - `FamilyPrepareSpec`, `PrepareSuiteSpec`, `PrepareSpec`, `PrepareRegistry`, `PreparePlan`, `PrepareStats`
 - `PreparedExample`, `TaskBlendSpec`, `EvaluationCellSpec`, `BlendSpec`, `DataPlan`
 - `blend_prepared_examples()`, `format_data_plan()`, `save_data_plan()`
+- `CausalLMDataConfig`, `build_causal_lm_sequences()`, `build_causal_lm_collator()`
 - `PromptRenderer`, `CompletionRenderer`
 - `TemplatePromptRenderer`
 - `ChatPromptFormatter`
@@ -229,6 +230,53 @@ fingerprint version. Persist it next to a dataset with `save_data_plan(...)` as
 The implementation is intentionally platform independent. External data systems
 can materialize the prepared corpus and implement the same prepare/blend contracts
 without becoming dependencies of the core package.
+
+## Plain causal-LM pretraining
+
+Plain causal-LM pretraining uses the same model-facing contract as SFT:
+`input_ids` plus `labels`. The difference is label construction. Every real
+pretraining token is supervised, so `labels == input_ids`; the training runtime
+performs the causal next-token shift.
+
+Sequence construction happens before the training DataLoader so
+`per_device_batch_size` continues to mean model sequences rather than source
+documents:
+
+```python
+from llm_training_data import (
+    CausalLMDataConfig,
+    build_causal_lm_collator,
+    build_causal_lm_sequences,
+)
+
+rows = build_causal_lm_sequences(
+    documents,
+    tokenizer=tokenizer,
+    max_sequence_length=4096,
+    config=CausalLMDataConfig(
+        append_eos=True,
+        pack_across_documents=True,
+        allow_document_split=True,
+    ),
+)
+
+collator = build_causal_lm_collator(
+    tokenizer,
+    max_sequence_length=4096,
+)
+```
+
+By default an EOS token marks each document boundary, documents may cross fixed
+sequence boundaries, and adjacent documents may share a sequence. EOS marks the
+boundary but does not isolate causal attention or next-token loss between
+documents. Set `pack_across_documents=False` when documents must not share a
+model sequence. Set `allow_document_split=False` to reject a document that
+cannot fit whole in one sequence. `drop_remainder=True` drops incomplete
+sequence chunks instead of padding them later.
+
+The causal-LM collator pads only the final incomplete rows to the configured
+sequence length. Padding positions use attention mask 0 and label -100; all real
+tokens retain full-token causal supervision.
 
 ## Basic SFT
 
