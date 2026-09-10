@@ -120,6 +120,25 @@ class PrepareSuiteSpec:
                 )
         object.__setattr__(self, "families", families)
 
+    @property
+    def fingerprint(self) -> str:
+        return _canonical_sha256(
+            {
+                "run_id": self.run_id,
+                "families": {
+                    name: {
+                        "config": dict(spec.config),
+                        "task_names": (
+                            list(spec.task_names)
+                            if spec.task_names is not None
+                            else None
+                        ),
+                    }
+                    for name, spec in sorted(self.families.items())
+                },
+            }
+        )
+
 
 @dataclass(frozen=True)
 class PreparePlan:
@@ -183,6 +202,9 @@ class PreparePlan:
             }
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class PrepareStats:
@@ -242,6 +264,12 @@ class PrepareStats:
             ),
         )
 
+        if self.rejection_counts and (
+            sum(self.rejection_counts.values()) != self.rejected_rows
+        ):
+            raise ValueError(
+                "prepare_stats.rejection_counts must sum to rejected_rows"
+            )
         if self.rows_per_task and sum(self.rows_per_task.values()) != self.output_rows:
             raise ValueError(
                 "prepare_stats.rows_per_task must sum to output_rows"
@@ -251,12 +279,18 @@ class PrepareStats:
                 "prepare_stats.rows_per_split must sum to output_rows"
             )
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class PrepareResult:
     plan: PreparePlan
     artifact: PreparedArtifactRef
     stats: PrepareStats
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class PrepareSpec(ABC):
@@ -319,16 +353,21 @@ class PrepareSpec(ABC):
                 "DataSuiteSpec family declaration"
             )
 
-        selected = request.task_names or family.task_names
-        unknown = sorted(set(selected) - set(family.task_names))
+        requested_tasks = request.task_names or family.task_names
+        unknown = sorted(set(requested_tasks) - set(family.task_names))
         if unknown:
             raise ValueError(
                 f"prepare family {family.name!r} selected unknown tasks: {unknown}"
             )
+        selected_set = set(requested_tasks)
+        selected = tuple(
+            task_name
+            for task_name in family.task_names
+            if task_name in selected_set
+        )
 
         sources_by_name = {source.name: source for source in suite.sources}
         sources = tuple(sources_by_name[name] for name in family.source_names)
-        selected = tuple(selected)
         self.validate_config(
             request.config,
             sources=sources,
@@ -344,8 +383,8 @@ class PrepareSpec(ABC):
         )
 
     @abstractmethod
-    def prepare(self, plan: PreparePlan) -> PreparedArtifactRef:
-        """Materialize one family and return a storage-neutral artifact ref."""
+    def prepare(self, plan: PreparePlan) -> PrepareResult:
+        """Materialize one family and return its validated result."""
         raise NotImplementedError
 
 
@@ -416,6 +455,40 @@ def plan_prepare_suite(
     return tuple(plans)
 
 
+def validate_prepared_mappings(
+    rows: Iterable[Mapping[str, Any]],
+    plan: PreparePlan,
+    *,
+    allowed_splits: Iterable[str] | None = None,
+) -> tuple[tuple[PreparedExample, ...], PrepareStats]:
+    """Validate canonical row fields, parse them, then validate semantics."""
+
+    modern_fields = set(PREPARED_SCHEMA_FIELDS)
+    legacy_fields = (modern_fields - {"group_id"}) | {"example_id"}
+    examples: list[PreparedExample] = []
+
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise TypeError("prepared rows must be mappings")
+        fields = set(row)
+        if fields not in {frozenset(modern_fields), frozenset(legacy_fields)}:
+            missing = sorted(modern_fields - fields)
+            extra = sorted(fields - modern_fields - {"example_id"})
+            raise ValueError(
+                "prepared row does not match the canonical semantic schema: "
+                f"missing={missing}, extra={extra}"
+            )
+        examples.append(PreparedExample.from_mapping(row))
+
+    parsed = tuple(examples)
+    stats = validate_prepared_examples(
+        parsed,
+        plan,
+        allowed_splits=allowed_splits,
+    )
+    return parsed, stats
+
+
 def validate_prepared_examples(
     examples: Iterable[PreparedExample],
     plan: PreparePlan,
@@ -434,6 +507,10 @@ def validate_prepared_examples(
     groups: set[str] = set()
 
     for row in rows:
+        if not isinstance(row, PreparedExample):
+            raise TypeError(
+                "validate_prepared_examples expects PreparedExample rows"
+            )
         if row.task_name not in allowed_tasks:
             raise ValueError(
                 f"prepared row task {row.task_name!r} is not declared by "
