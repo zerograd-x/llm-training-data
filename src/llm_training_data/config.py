@@ -14,7 +14,6 @@ class SFTDataConfig(BaseModel):
     completion_prefix: str | None = None
 
 
-
 class CausalLMDataConfig(BaseModel):
     """Controls plain causal-LM document tokenization and sequence construction."""
 
