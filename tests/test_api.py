@@ -32,6 +32,7 @@ from llm_training_data import (
     build_packed_sft_collator,
     build_sft_collator,
     build_training_example,
+    execute_prepare_plan,
     extract_template_fields,
     format_data_plan,
     make_prepare_result,
@@ -515,6 +516,7 @@ def test_prepare_suite_registry_planning_and_task_pruning():
                 row_count=1,
                 fingerprint="artifact-fingerprint",
                 source_names=tuple(source.name for source in plan.source_refs),
+                prepare_plan_fingerprint=plan.fingerprint,
             )
             return make_prepare_result(
                 plan,
@@ -578,6 +580,7 @@ def test_prepare_output_validation_and_accounting():
                 row_count=2,
                 fingerprint="artifact-fingerprint",
                 source_names=("records",),
+                prepare_plan_fingerprint=plan.fingerprint,
             )
             return make_prepare_result(
                 plan,
@@ -623,7 +626,7 @@ def test_prepare_output_validation_and_accounting():
         distinct_groups=2,
     )
 
-    executed = registry.get("family_a").prepare(plan)
+    executed = execute_prepare_plan(plan, registry)
     artifact = executed.artifact
     validate_prepared_artifact(artifact, plan, stats=stats)
     result = make_prepare_result(plan, artifact, stats=stats)
@@ -678,9 +681,22 @@ def test_prepare_output_validation_and_accounting():
         row_count=2,
         fingerprint="artifact-fingerprint",
         source_names=("records",),
+        prepare_plan_fingerprint=plan.fingerprint,
     )
     with pytest.raises(ValueError, match="schema"):
         validate_prepared_artifact(wrong_schema, plan, stats=stats)
+
+    wrong_plan = PreparedArtifactRef(
+        family="family_a",
+        uri="artifact://prepared/family-a",
+        schema_version=PREPARED_SCHEMA_VERSION,
+        row_count=2,
+        fingerprint="artifact-fingerprint",
+        source_names=("records",),
+        prepare_plan_fingerprint="different-plan",
+    )
+    with pytest.raises(ValueError, match="prepare_plan_fingerprint"):
+        validate_prepared_artifact(wrong_plan, plan, stats=stats)
 
 
 def test_prepare_registry_and_suite_fail_loudly_on_contract_mismatch():
