@@ -41,6 +41,7 @@ from llm_training_data import (
     save_data_plan,
     validate_prepared_artifact,
     validate_prepared_examples,
+    validate_prepared_mappings,
     write_system_prompt_metadata,
 )
 
@@ -507,13 +508,18 @@ def test_prepare_suite_registry_planning_and_task_pruning():
             assert task_names == ("task_b",)
 
         def prepare(self, plan):
-            return PreparedArtifactRef(
+            artifact = PreparedArtifactRef(
                 family=plan.family,
                 uri="artifact://prepared/family-a",
                 schema_version=PREPARED_SCHEMA_VERSION,
                 row_count=1,
                 fingerprint="artifact-fingerprint",
                 source_names=tuple(source.name for source in plan.source_refs),
+            )
+            return make_prepare_result(
+                plan,
+                artifact,
+                stats=PrepareStats(output_rows=1),
             )
 
     registry = PrepareRegistry()
@@ -565,13 +571,18 @@ def test_prepare_output_validation_and_accounting():
         task_names = ("task_a",)
 
         def prepare(self, plan):
-            return PreparedArtifactRef(
+            artifact = PreparedArtifactRef(
                 family=plan.family,
                 uri="artifact://prepared/family-a",
                 schema_version=PREPARED_SCHEMA_VERSION,
                 row_count=2,
                 fingerprint="artifact-fingerprint",
                 source_names=("records",),
+            )
+            return make_prepare_result(
+                plan,
+                artifact,
+                stats=PrepareStats(output_rows=2),
             )
 
     registry = PrepareRegistry()
@@ -612,12 +623,53 @@ def test_prepare_output_validation_and_accounting():
         distinct_groups=2,
     )
 
-    artifact = registry.get("family_a").prepare(plan)
+    executed = registry.get("family_a").prepare(plan)
+    artifact = executed.artifact
     validate_prepared_artifact(artifact, plan, stats=stats)
     result = make_prepare_result(plan, artifact, stats=stats)
     assert result.plan == plan
     assert result.artifact == artifact
     assert result.stats == stats
+
+    parsed, parsed_stats = validate_prepared_mappings(
+        (
+            {
+                "task_name": "task_a",
+                "split": "train",
+                "group_id": "group-3",
+                "input_text": "input 3",
+                "options": (),
+                "answer_index": -1,
+                "target_text": "target 3",
+            },
+        ),
+        plan,
+        allowed_splits=("train", "validation"),
+    )
+    assert parsed[0].group_id == "group-3"
+    assert parsed_stats.output_rows == 1
+
+    with pytest.raises(ValueError, match="canonical semantic schema"):
+        validate_prepared_mappings(
+            (
+                {
+                    "task_name": "task_a",
+                    "split": "train",
+                    "group_id": "group-4",
+                    "input_text": "input 4",
+                    "answer_index": -1,
+                    "target_text": "target 4",
+                },
+            ),
+            plan,
+        )
+
+    with pytest.raises(ValueError, match="rejection_counts"):
+        PrepareStats(
+            output_rows=1,
+            rejected_rows=2,
+            rejection_counts={"invalid_record": 1},
+        )
 
     wrong_schema = PreparedArtifactRef(
         family="family_a",
