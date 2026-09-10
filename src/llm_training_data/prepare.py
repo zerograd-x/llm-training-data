@@ -124,7 +124,6 @@ class PrepareSuiteSpec:
     def fingerprint(self) -> str:
         return _canonical_sha256(
             {
-                "run_id": self.run_id,
                 "families": {
                     name: {
                         "config": dict(spec.config),
@@ -198,7 +197,6 @@ class PreparePlan:
                 "task_names": list(self.task_names),
                 "config": dict(self.config),
                 "suite_fingerprint": self.suite_fingerprint,
-                "run_id": self.run_id,
             }
         )
 
@@ -264,6 +262,13 @@ class PrepareStats:
             ),
         )
 
+        if (
+            self.input_rows is not None
+            and self.input_rows != self.output_rows + self.rejected_rows
+        ):
+            raise ValueError(
+                "prepare_stats.input_rows must equal output_rows + rejected_rows"
+            )
         if self.rejection_counts and (
             sum(self.rejection_counts.values()) != self.rejected_rows
         ):
