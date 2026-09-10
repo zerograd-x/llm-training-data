@@ -126,8 +126,11 @@ plans = plan_prepare_suite(suite, prepare_suite, registry)
 `PrepareSpec.validate_config(...)` is an optional family-specific preflight hook.
 `PrepareRegistry` is explicit and has no import-time registration side effects.
 `PreparePlan` binds the resolved source snapshots, selected tasks, run config, and
-suite fingerprint into a stable plan fingerprint. Concrete prepare implementations
-remain outside the core package and may use any execution or storage technology.
+suite fingerprint into a stable plan fingerprint. The returned artifact records that
+prepare-plan fingerprint, closing the provenance chain from source snapshots through
+family configuration to materialized data. `execute_prepare_plan(...)` validates the
+plugin result before accepting it. Concrete prepare implementations remain outside the
+core package and may use any execution or storage technology.
 
 Prepare output has a versioned canonical semantic schema. Use
 `validate_prepared_mappings(...)` when reading raw rows, or
@@ -150,6 +153,7 @@ prepared = PreparedArtifactRef(
     row_count=100000,
     fingerprint="...",
     source_names=("documents",),
+    prepare_plan_fingerprint=plans[0].fingerprint,
 )
 ```
 
