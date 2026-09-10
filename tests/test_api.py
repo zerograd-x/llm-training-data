@@ -759,7 +759,6 @@ def test_prepare_registry_and_suite_fail_loudly_on_contract_mismatch():
         )
 
 
-
 def test_causal_lm_sequences_pack_documents_and_preserve_full_token_labels(tokenizer_cls):
     tokenizer = tokenizer_cls()
     sequences = build_causal_lm_sequences(
@@ -770,7 +769,8 @@ def test_causal_lm_sequences_pack_documents_and_preserve_full_token_labels(token
 
     assert [len(row["input_ids"]) for row in sequences] == [4, 1]
     assert all(row["labels"] == row["input_ids"] for row in sequences)
-    assert sequences[0]["input_ids"][-2:] == [tokenizer.eos_token_id, 10 + sum(ord(ch) for ch in "gamma") % 80]
+    gamma_id = 10 + sum(ord(ch) for ch in "gamma") % 80
+    assert sequences[0]["input_ids"][-2:] == [tokenizer.eos_token_id, gamma_id]
     assert sequences[1]["input_ids"] == [tokenizer.eos_token_id]
 
 
