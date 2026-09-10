@@ -78,11 +78,6 @@ class FamilySpec:
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "family.name")
-        if self.prepare_plan_fingerprint is not None:
-            _require_non_empty(
-                self.prepare_plan_fingerprint,
-                "prepared_artifact.prepare_plan_fingerprint",
-            )
         source_names = tuple(self.source_names)
         task_names = tuple(self.task_names)
         if not source_names or any(
@@ -192,6 +187,11 @@ class PreparedArtifactRef:
     def __post_init__(self) -> None:
         for name in ("family", "uri", "schema_version", "fingerprint"):
             _require_non_empty(getattr(self, name), f"prepared_artifact.{name}")
+        if self.prepare_plan_fingerprint is not None:
+            _require_non_empty(
+                self.prepare_plan_fingerprint,
+                "prepared_artifact.prepare_plan_fingerprint",
+            )
         if not isinstance(self.row_count, int) or self.row_count < 0:
             raise ValueError("prepared_artifact.row_count must be >= 0")
         source_names = tuple(self.source_names)
