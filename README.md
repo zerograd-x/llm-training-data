@@ -17,6 +17,7 @@ import llm_training_data
 The API uses data-preparation terminology rather than implementation-oriented names:
 
 - `SourceRef`, `FamilySpec`, `DataSuiteSpec`, `PreparedArtifactRef`
+- `FamilyPrepareSpec`, `PrepareSuiteSpec`, `PrepareSpec`, `PrepareRegistry`, `PreparePlan`, `PrepareStats`
 - `PreparedExample`, `TaskBlendSpec`, `EvaluationCellSpec`, `BlendSpec`, `DataPlan`
 - `blend_prepared_examples()`, `format_data_plan()`, `save_data_plan()`
 - `PromptRenderer`, `CompletionRenderer`
@@ -89,6 +90,44 @@ suite = DataSuiteSpec(
 `SourceRef` requires at least one of `version`, `snapshot`, or `fingerprint`, so a
 suite does not silently mean "whatever is latest". `DataSuiteSpec` validates source
 references and requires every task to have exactly one prepare-family owner.
+
+Prepare execution is an explicit plugin contract rather than a built-in storage or
+workflow system. A run enables only the families it needs, and may select only a
+subset of a family's declared tasks:
+
+```python
+from llm_training_data import (
+    FamilyPrepareSpec,
+    PrepareRegistry,
+    PrepareSpec,
+    PrepareSuiteSpec,
+    plan_prepare_suite,
+)
+
+class GenericPrepareSpec(PrepareSpec):
+    name = "generation"
+    task_names = ("text_to_target",)
+
+    def prepare(self, plan):
+        ...  # materialize externally and return PreparedArtifactRef
+
+registry = PrepareRegistry()
+registry.register(GenericPrepareSpec)
+
+prepare_suite = PrepareSuiteSpec(
+    run_id="data-run-001",
+    families={
+        "generation": FamilyPrepareSpec(config={"mode": "standard"}),
+    },
+)
+plans = plan_prepare_suite(suite, prepare_suite, registry)
+```
+
+`PrepareSpec.validate_config(...)` is an optional family-specific preflight hook.
+`PrepareRegistry` is explicit and has no import-time registration side effects.
+`PreparePlan` binds the resolved source snapshots, selected tasks, run config, and
+suite fingerprint into a stable plan fingerprint. Concrete prepare implementations
+remain outside the core package and may use any execution or storage technology.
 
 A materialized prepare-stage output can be represented without coupling the library
 to a storage system:
@@ -203,13 +242,13 @@ Prompt and padding positions are masked with `-100` in `labels`.
 ```python
 from llm_training_data import TemplatePromptRenderer, build_sft_collator
 
-class ProductPromptRenderer(TemplatePromptRenderer):
-    template = "Title: {title}\nDescription: {description}"
+class RecordPromptRenderer(TemplatePromptRenderer):
+    template = "Header: {header}\nBody: {body}"
 
 collator = build_sft_collator(
     tokenizer,
     max_sequence_length=2048,
-    prompt_renderer=ProductPromptRenderer(),
+    prompt_renderer=RecordPromptRenderer(),
 )
 ```
 
@@ -251,7 +290,8 @@ application-specific schemas. Hugging Face tokenizers are supported through a
 small protocol, while `transformers` remains an optional dependency.
 
 The package fails early on malformed inputs such as invalid semantic examples,
-ambiguous task ownership, stale/underspecified source references, lineage mismatch,
-non-applicable evaluation rows, zero/short train supply, non-positive sequence
+ambiguous task ownership, stale/underspecified source references, prepare-plan
+mismatch, prepared-schema/lineage mismatch, non-applicable evaluation rows,
+zero/short train supply, non-positive sequence
 budgets, missing pad/EOS token IDs, empty normal SFT batches, renderer row-count
 mismatches, and inconsistent template fields.
