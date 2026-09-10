@@ -109,7 +109,7 @@ class GenericPrepareSpec(PrepareSpec):
     task_names = ("text_to_target",)
 
     def prepare(self, plan):
-        ...  # materialize externally and return PreparedArtifactRef
+        ...  # materialize externally and return PrepareResult
 
 registry = PrepareRegistry()
 registry.register(GenericPrepareSpec)
@@ -128,6 +128,14 @@ plans = plan_prepare_suite(suite, prepare_suite, registry)
 `PreparePlan` binds the resolved source snapshots, selected tasks, run config, and
 suite fingerprint into a stable plan fingerprint. Concrete prepare implementations
 remain outside the core package and may use any execution or storage technology.
+
+Prepare output has a versioned canonical semantic schema. Use
+`validate_prepared_mappings(...)` when reading raw rows, or
+`validate_prepared_examples(...)` after parsing them. These checks enforce exact
+schema fields, selected task membership, allowed cells, generation/choice
+invariants, duplicate rejection, and the rule that probe rows are created only by
+the blend stage. `PrepareStats` records output counts, task/cell coverage, distinct
+groups, and optional application-defined rejection accounting.
 
 A materialized prepare-stage output can be represented without coupling the library
 to a storage system:
