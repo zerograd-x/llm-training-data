@@ -23,6 +23,7 @@ from .prepare import (
     plan_prepare_suite,
     validate_prepared_artifact,
     validate_prepared_examples,
+    validate_prepared_mappings,
 )
 from .pretrain import (
     DEFAULT_EVAL_SPLITS,
@@ -118,4 +119,5 @@ __all__ = [
     "plan_prepare_suite",
     "validate_prepared_artifact",
     "validate_prepared_examples",
+    "validate_prepared_mappings",
 ]
