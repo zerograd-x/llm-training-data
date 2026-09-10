@@ -480,6 +480,9 @@ def validate_prepared_mappings(
                 "prepared row does not match the canonical semantic schema: "
                 f"missing={missing}, extra={extra}"
             )
+        options = row.get("options")
+        if not isinstance(options, (list, tuple)):
+            raise TypeError("prepared row options must be a list or tuple")
         examples.append(PreparedExample.from_mapping(row))
 
     parsed = tuple(examples)
@@ -573,11 +576,12 @@ def validate_prepared_artifact(
             "the resolved prepare plan"
         )
 
-    expected_sources = tuple(source.name for source in plan.source_refs)
-    if tuple(artifact.source_names) != expected_sources:
+    expected_sources = {source.name for source in plan.source_refs}
+    actual_sources = set(artifact.source_names)
+    if actual_sources != expected_sources:
         raise ValueError(
             f"prepared artifact source lineage mismatch: expected "
-            f"{list(expected_sources)}, got {list(artifact.source_names)}"
+            f"{sorted(expected_sources)}, got {sorted(actual_sources)}"
         )
 
     if stats is not None and artifact.row_count != stats.output_rows:
