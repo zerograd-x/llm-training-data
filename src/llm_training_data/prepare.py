@@ -361,6 +361,8 @@ class PrepareRegistry:
     def register(self, spec_cls: type[PrepareSpec]) -> type[PrepareSpec]:
         if not isinstance(spec_cls, type) or not issubclass(spec_cls, PrepareSpec):
             raise TypeError("register expects a PrepareSpec subclass")
+        if inspect.isabstract(spec_cls):
+            raise TypeError("register expects a concrete PrepareSpec subclass")
         spec_cls.validate_definition()
         existing = self._specs.get(spec_cls.name)
         if existing is not None and existing is not spec_cls:
@@ -459,7 +461,6 @@ def validate_prepared_examples(
         groups.add(row.group_id)
 
     return PrepareStats(
-        input_rows=len(rows),
         output_rows=len(rows),
         rows_per_task=dict(rows_per_task),
         rows_per_split=dict(rows_per_split),
