@@ -11,7 +11,14 @@ from llm_training_data import (
     DefaultCompletionRenderer,
     DefaultPromptRenderer,
     EvaluationCellSpec,
+    FamilyPrepareSpec,
     FamilySpec,
+    PREPARED_SCHEMA_VERSION,
+    PreparePlan,
+    PrepareRegistry,
+    PrepareSpec,
+    PrepareStats,
+    PrepareSuiteSpec,
     PreparedArtifactRef,
     PreparedExample,
     SFTDataConfig,
@@ -25,11 +32,17 @@ from llm_training_data import (
     build_packed_sft_collator,
     build_sft_collator,
     build_training_example,
+    execute_prepare_plan,
     extract_template_fields,
     format_data_plan,
+    make_prepare_result,
+    plan_prepare_suite,
     read_system_prompt_metadata,
     resolve_system_prompt,
     save_data_plan,
+    validate_prepared_artifact,
+    validate_prepared_examples,
+    validate_prepared_mappings,
     write_system_prompt_metadata,
 )
 
@@ -462,4 +475,282 @@ def test_pretrain_suite_rejects_ambiguous_task_ownership():
                     task_names=("shared_task",),
                 ),
             ),
+        )
+
+
+
+def test_prepare_suite_registry_planning_and_task_pruning():
+    suite = DataSuiteSpec(
+        suite_id="suite-001",
+        sources=(
+            SourceRef(
+                name="documents",
+                uri="dataset://documents",
+                snapshot="snapshot-001",
+            ),
+        ),
+        families=(
+            FamilySpec(
+                name="family_a",
+                source_names=("documents",),
+                task_names=("task_a", "task_b"),
+            ),
+        ),
+    )
+
+    class FamilyA(PrepareSpec):
+        name = "family_a"
+        task_names = ("task_a", "task_b")
+
+        def validate_config(self, config, *, sources, task_names):
+            if config.get("mode") not in {"standard", "strict"}:
+                raise ValueError("mode must be standard or strict")
+            assert tuple(source.name for source in sources) == ("documents",)
+            assert task_names == ("task_b",)
+
+        def prepare(self, plan):
+            artifact = PreparedArtifactRef(
+                family=plan.family,
+                uri="artifact://prepared/family-a",
+                schema_version=PREPARED_SCHEMA_VERSION,
+                row_count=1,
+                fingerprint="artifact-fingerprint",
+                source_names=tuple(source.name for source in plan.source_refs),
+                prepare_plan_fingerprint=plan.fingerprint,
+            )
+            return make_prepare_result(
+                plan,
+                artifact,
+                stats=PrepareStats(output_rows=1),
+            )
+
+    registry = PrepareRegistry()
+    assert registry.register(FamilyA) is FamilyA
+    assert registry.get("family_a") is not registry.get("family_a")
+
+    prepare_suite = PrepareSuiteSpec(
+        run_id="data-run-001",
+        families={
+            "family_a": FamilyPrepareSpec(
+                config={"mode": "strict"},
+                task_names=("task_b",),
+            ),
+        },
+    )
+    plans = plan_prepare_suite(suite, prepare_suite, registry)
+
+    assert len(plans) == 1
+    plan = plans[0]
+    assert isinstance(plan, PreparePlan)
+    assert plan.family == "family_a"
+    assert plan.task_names == ("task_b",)
+    assert plan.config == {"mode": "strict"}
+    assert plan.run_id == "data-run-001"
+    assert plan.suite_fingerprint == suite.fingerprint
+    assert len(plan.fingerprint) == 64
+
+
+def test_prepare_output_validation_and_accounting():
+    suite = DataSuiteSpec(
+        sources=(
+            SourceRef(
+                name="records",
+                uri="dataset://records",
+                version="v1",
+            ),
+        ),
+        families=(
+            FamilySpec(
+                name="family_a",
+                source_names=("records",),
+                task_names=("task_a",),
+            ),
+        ),
+    )
+
+    class FamilyA(PrepareSpec):
+        name = "family_a"
+        task_names = ("task_a",)
+
+        def prepare(self, plan):
+            artifact = PreparedArtifactRef(
+                family=plan.family,
+                uri="artifact://prepared/family-a",
+                schema_version=PREPARED_SCHEMA_VERSION,
+                row_count=2,
+                fingerprint="artifact-fingerprint",
+                source_names=("records",),
+                prepare_plan_fingerprint=plan.fingerprint,
+            )
+            return make_prepare_result(
+                plan,
+                artifact,
+                stats=PrepareStats(output_rows=2),
+            )
+
+    registry = PrepareRegistry()
+    registry.register(FamilyA)
+    plan = plan_prepare_suite(
+        suite,
+        PrepareSuiteSpec(
+            families={"family_a": FamilyPrepareSpec()},
+        ),
+        registry,
+    )[0]
+
+    rows = (
+        PreparedExample(
+            task_name="task_a",
+            split="train",
+            group_id="group-1",
+            input_text="input 1",
+            target_text="target 1",
+        ),
+        PreparedExample(
+            task_name="task_a",
+            split="validation",
+            group_id="group-2",
+            input_text="input 2",
+            target_text="target 2",
+        ),
+    )
+    stats = validate_prepared_examples(
+        rows,
+        plan,
+        allowed_splits=("train", "validation"),
+    )
+    assert stats == PrepareStats(
+        output_rows=2,
+        rows_per_task={"task_a": 2},
+        rows_per_split={"train": 1, "validation": 1},
+        distinct_groups=2,
+    )
+
+    executed = execute_prepare_plan(plan, registry)
+    artifact = executed.artifact
+    validate_prepared_artifact(artifact, plan, stats=stats)
+    result = make_prepare_result(plan, artifact, stats=stats)
+    assert result.plan == plan
+    assert result.artifact == artifact
+    assert result.stats == stats
+
+    parsed, parsed_stats = validate_prepared_mappings(
+        (
+            {
+                "task_name": "task_a",
+                "split": "train",
+                "group_id": "group-3",
+                "input_text": "input 3",
+                "options": (),
+                "answer_index": -1,
+                "target_text": "target 3",
+            },
+        ),
+        plan,
+        allowed_splits=("train", "validation"),
+    )
+    assert parsed[0].group_id == "group-3"
+    assert parsed_stats.output_rows == 1
+
+    with pytest.raises(ValueError, match="canonical semantic schema"):
+        validate_prepared_mappings(
+            (
+                {
+                    "task_name": "task_a",
+                    "split": "train",
+                    "group_id": "group-4",
+                    "input_text": "input 4",
+                    "answer_index": -1,
+                    "target_text": "target 4",
+                },
+            ),
+            plan,
+        )
+
+    with pytest.raises(ValueError, match="rejection_counts"):
+        PrepareStats(
+            output_rows=1,
+            rejected_rows=2,
+            rejection_counts={"invalid_record": 1},
+        )
+
+    wrong_schema = PreparedArtifactRef(
+        family="family_a",
+        uri="artifact://prepared/family-a",
+        schema_version="other-schema",
+        row_count=2,
+        fingerprint="artifact-fingerprint",
+        source_names=("records",),
+        prepare_plan_fingerprint=plan.fingerprint,
+    )
+    with pytest.raises(ValueError, match="schema"):
+        validate_prepared_artifact(wrong_schema, plan, stats=stats)
+
+    wrong_plan = PreparedArtifactRef(
+        family="family_a",
+        uri="artifact://prepared/family-a",
+        schema_version=PREPARED_SCHEMA_VERSION,
+        row_count=2,
+        fingerprint="artifact-fingerprint",
+        source_names=("records",),
+        prepare_plan_fingerprint="different-plan",
+    )
+    with pytest.raises(ValueError, match="prepare_plan_fingerprint"):
+        validate_prepared_artifact(wrong_plan, plan, stats=stats)
+
+
+def test_prepare_registry_and_suite_fail_loudly_on_contract_mismatch():
+    class FamilyA(PrepareSpec):
+        name = "family_a"
+        task_names = ("task_a",)
+
+        def prepare(self, plan):
+            raise AssertionError("not executed")
+
+    class ConflictingFamily(PrepareSpec):
+        name = "family_a"
+        task_names = ("task_a",)
+
+        def prepare(self, plan):
+            raise AssertionError("not executed")
+
+    registry = PrepareRegistry()
+    registry.register(FamilyA)
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register(ConflictingFamily)
+    with pytest.raises(KeyError, match="Registered families"):
+        registry.get("missing")
+
+    suite = DataSuiteSpec(
+        sources=(
+            SourceRef(name="records", uri="dataset://records", version="v1"),
+        ),
+        families=(
+            FamilySpec(
+                name="family_a",
+                source_names=("records",),
+                task_names=("task_a",),
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="absent from DataSuiteSpec"):
+        plan_prepare_suite(
+            suite,
+            PrepareSuiteSpec(
+                families={"family_b": FamilyPrepareSpec()},
+            ),
+            registry,
+        )
+
+    with pytest.raises(ValueError, match="unknown tasks"):
+        plan_prepare_suite(
+            suite,
+            PrepareSuiteSpec(
+                families={
+                    "family_a": FamilyPrepareSpec(
+                        task_names=("task_b",),
+                    )
+                },
+            ),
+            registry,
         )

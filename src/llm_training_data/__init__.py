@@ -9,6 +9,23 @@ from .collators import build_packed_sft_collator, build_sft_collator
 from .config import SFTDataConfig
 from .examples import build_training_example, round_up
 from .packing import PackedSequence, ShortestFirstSequencePacker
+from .prepare import (
+    PREPARED_SCHEMA_FIELDS,
+    PREPARED_SCHEMA_VERSION,
+    FamilyPrepareSpec,
+    PreparePlan,
+    PrepareRegistry,
+    PrepareResult,
+    PrepareSpec,
+    PrepareStats,
+    PrepareSuiteSpec,
+    execute_prepare_plan,
+    make_prepare_result,
+    plan_prepare_suite,
+    validate_prepared_artifact,
+    validate_prepared_examples,
+    validate_prepared_mappings,
+)
 from .pretrain import (
     DEFAULT_EVAL_SPLITS,
     TRAIN_PROBE_SPLIT,
@@ -89,4 +106,20 @@ __all__ = [
     "sampling_rank_key",
     "save_data_plan",
     "write_system_prompt_metadata",
+
+    "FamilyPrepareSpec",
+    "PREPARED_SCHEMA_FIELDS",
+    "PREPARED_SCHEMA_VERSION",
+    "PreparePlan",
+    "PrepareRegistry",
+    "PrepareResult",
+    "PrepareSpec",
+    "PrepareStats",
+    "PrepareSuiteSpec",
+    "execute_prepare_plan",
+    "make_prepare_result",
+    "plan_prepare_suite",
+    "validate_prepared_artifact",
+    "validate_prepared_examples",
+    "validate_prepared_mappings",
 ]
