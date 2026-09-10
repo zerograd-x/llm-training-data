@@ -836,9 +836,15 @@ def format_data_plan(plan: DataPlan) -> str:
     if plan.prepared_artifacts:
         lines.extend(["", "PREPARED ARTIFACTS"])
         for artifact in plan.prepared_artifacts:
+            plan_suffix = (
+                f" plan={artifact.prepare_plan_fingerprint}"
+                if artifact.prepare_plan_fingerprint is not None
+                else ""
+            )
             lines.append(
                 f"  {artifact.family}: rows={artifact.row_count} "
                 f"schema={artifact.schema_version} uri={artifact.uri}"
+                f"{plan_suffix}"
             )
 
     lines.extend(
