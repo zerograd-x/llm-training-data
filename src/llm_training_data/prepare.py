@@ -129,7 +129,7 @@ class PrepareSuiteSpec:
                     name: {
                         "config": dict(spec.config),
                         "task_names": (
-                            list(spec.task_names)
+                            sorted(spec.task_names)
                             if spec.task_names is not None
                             else None
                         ),
@@ -567,6 +567,11 @@ def validate_prepared_artifact(
             f"prepared artifact schema {artifact.schema_version!r} does not "
             f"match expected {schema_version!r}"
         )
+    if artifact.prepare_plan_fingerprint != plan.fingerprint:
+        raise ValueError(
+            "prepared artifact prepare_plan_fingerprint does not match "
+            "the resolved prepare plan"
+        )
 
     expected_sources = tuple(source.name for source in plan.source_refs)
     if tuple(artifact.source_names) != expected_sources:
@@ -592,3 +597,23 @@ def make_prepare_result(
 
     validate_prepared_artifact(artifact, plan, stats=stats)
     return PrepareResult(plan=plan, artifact=artifact, stats=stats)
+
+
+def execute_prepare_plan(
+    plan: PreparePlan,
+    registry: PrepareRegistry,
+) -> PrepareResult:
+    """Execute one resolved prepare plan and validate the returned result.
+
+    Workflow systems can fan this function out concurrently without becoming a
+    dependency of the core package.
+    """
+
+    spec = registry.get(plan.family)
+    result = spec.prepare(plan)
+    if not isinstance(result, PrepareResult):
+        raise TypeError("PrepareSpec.prepare() must return PrepareResult")
+    if result.plan != plan:
+        raise ValueError("prepare result plan does not match the requested plan")
+    validate_prepared_artifact(result.artifact, plan, stats=result.stats)
+    return result
