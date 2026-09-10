@@ -463,15 +463,17 @@ def validate_prepared_mappings(
 ) -> tuple[tuple[PreparedExample, ...], PrepareStats]:
     """Validate canonical row fields, parse them, then validate semantics."""
 
-    modern_fields = set(PREPARED_SCHEMA_FIELDS)
-    legacy_fields = (modern_fields - {"group_id"}) | {"example_id"}
+    modern_fields = frozenset(PREPARED_SCHEMA_FIELDS)
+    legacy_fields = frozenset(
+        (set(PREPARED_SCHEMA_FIELDS) - {"group_id"}) | {"example_id"}
+    )
     examples: list[PreparedExample] = []
 
     for row in rows:
         if not isinstance(row, Mapping):
             raise TypeError("prepared rows must be mappings")
-        fields = set(row)
-        if fields not in {frozenset(modern_fields), frozenset(legacy_fields)}:
+        fields = frozenset(row)
+        if fields not in (modern_fields, legacy_fields):
             missing = sorted(modern_fields - fields)
             extra = sorted(fields - modern_fields - {"example_id"})
             raise ValueError(
